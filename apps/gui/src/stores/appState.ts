@@ -142,6 +142,19 @@ export const appStore = reactive({
 let initialized = false;
 let countdownTimer: number | null = null;
 let unlistenFn: (() => void) | null = null;
+let lastRunningTaskId = '';
+
+function resetForNewTask(taskId: string): void {
+  if (!taskId || taskId === lastRunningTaskId) return;
+  lastRunningTaskId = taskId;
+  if (taskId.startsWith('nat_')) {
+    appStore.latestNatReport = null;
+  } else if (taskId.startsWith('p2p_')) {
+    appStore.liveSeries = [];
+    appStore.livePeer = null;
+    appStore.latestP2pReport = null;
+  }
+}
 
 export function savePrefs(): void {
   try {
@@ -200,6 +213,7 @@ function handleStateUpdate(state: AssessmentState): void {
 
   if ('running' in state) {
     const r = state.running;
+    resetForNewTask(r.task_id);
     appStore.errorNotice = '';
     appStore.statusNotice = '';
     appStore.activeKind = r.task_id.startsWith('nat_') ? 'nat' : 'p2p';
@@ -412,9 +426,6 @@ export async function runP2pTest(): Promise<void> {
   }
 
   savePrefs();
-  appStore.liveSeries = [];
-  appStore.livePeer = null;
-  appStore.latestP2pReport = null;
 
   const input: P2pTaskInput = {
     signaling_ws_url: appStore.p2pForm.signaling_ws_url.trim(),
@@ -437,7 +448,8 @@ export async function runP2pTest(): Promise<void> {
   };
 
   try {
-    await startP2pAssessment(input);
+    const taskId = await startP2pAssessment(input);
+    resetForNewTask(taskId);
   } catch (err) {
     const parsed: ProbeError = parseInvokeError(err);
     appStore.errorNotice = formatProbeError(parsed);
@@ -453,7 +465,7 @@ export async function runNatTest(): Promise<void> {
   const opt = (s: string) => (s.trim() ? s.trim() : null);
 
   try {
-    await startNatAssessment({
+    const taskId = await startNatAssessment({
       public_stun_servers: parseStunList(appStore.natForm.stun_text),
       primary_v4_p1: useVps ? opt(appStore.natForm.primary_v4_p1) : null,
       primary_v4_p2: useVps ? opt(appStore.natForm.primary_v4_p2) : null,
@@ -462,6 +474,7 @@ export async function runNatTest(): Promise<void> {
       token: useVps ? opt(appStore.natForm.token) : null,
       timeout_ms: Math.max(300, Number(appStore.natForm.timeout_ms) || 2500),
     });
+    resetForNewTask(taskId);
   } catch (err) {
     appStore.errorNotice = formatProbeError(parseInvokeError(err));
   }

@@ -84,7 +84,7 @@ jobs:
           npm run build
 
       - name: Build Windows GUI binary
-        run: cargo build --release -p neteval-gui
+        run: cargo build --release -p neteval-gui --features custom-protocol
 
       - name: Stage Windows GUI binary
         shell: pwsh

@@ -150,7 +150,11 @@ function setMode(useVps: boolean): void {
     </div>
 
     <div v-else class="nat-empty">
-      暂无本机 NAT 体检结果
+      {{
+        runningThis && appStore.activeKind === 'nat'
+          ? '正在执行本机 NAT 体检...'
+          : '暂无本机 NAT 体检结果'
+      }}
     </div>
   </div>
 </template>

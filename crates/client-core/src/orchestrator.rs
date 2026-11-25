@@ -34,6 +34,7 @@ struct ActiveTask {
 struct OrchestratorInner {
     store: LocalStore,
     state_tx: watch::Sender<AssessmentState>,
+    _state_rx: watch::Receiver<AssessmentState>,
     active: Mutex<Option<ActiveTask>>,
 }
 
@@ -44,11 +45,12 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
-        let (state_tx, _rx) = watch::channel(AssessmentState::Idle);
+        let (state_tx, state_rx) = watch::channel(AssessmentState::Idle);
         Self {
             inner: Arc::new(OrchestratorInner {
                 store: LocalStore::new(data_dir),
                 state_tx,
+                _state_rx: state_rx,
                 active: Mutex::new(None),
             }),
         }

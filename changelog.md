@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1] - 2026-11-25
+
+### Fixed
+- **Windows GUI (`apps/gui/src-tauri`)**: Added `custom-protocol = ["tauri/custom-protocol"]` Cargo feature, a compile-time `build.rs` guard rejecting release builds without `custom-protocol` (`DEP_TAURI_DEV == "true"`), and `--features custom-protocol` in `.github/workflows/gui-ci.yml` and `.github/workflows/release.yml` so release Windows executables load embedded frontend assets instead of `localhost:1420`.
+- **Frontend (`apps/gui/src/stores/appState.ts`, `NatView.vue`)**: Cleared stale `latestNatReport` (and P2P live state) only once a new task ID starts (`resetForNewTask`), addressing Codex PR #1 P2 feedback without dropping prior results on synchronous start validation errors.
+- **Orchestrator (`crates/client-core/src/orchestrator.rs`)**: Retained an internal `watch::Receiver` on `OrchestratorInner` so `Orchestrator::state()` always reflects live transitions even when no external `subscribe()` listener is attached.
+
+### Added
+- **Tests (`apps/gui/src-tauri/tests/gui_state.rs`)**: Added end-to-end `GuiState` NAT assessment test verifying task execution against loopback S2 UDP responders, completion state, history listing, report loading, and report deletion.
+
 ## [1.2.0] - 2026-11-25
 
 ### Added

@@ -93,7 +93,7 @@ jobs:
           npm run build
 
       - name: Build GUI binary
-        run: cargo build --release -p neteval-gui
+        run: cargo build --release -p neteval-gui --features custom-protocol
 
       - name: Stage artifacts and checksums
         shell: pwsh
