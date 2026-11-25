@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0] - 2026-11-25
+
+### Added
+- **GUI (`apps/gui`)**: Tauri v2 + Vite + Vue 3 + TypeScript cross-platform application (`neteval-gui`) wrapping `client-core::Orchestrator` via 7 Tauri commands and `assessment://state` live progress events:
+  - P2P Dual-Peer Assessment view with real-time SVG latency/loss chart (up to 1200 points, hover crosshair), room-code pairing countdown, peer status bar, and `PeerSidebar` preset manager.
+  - Self-host NAT Assessment view, local History list/detail/delete view, `AdvancedSettingsPanel`, and `ResultModal` (desktop centered modal + mobile bottom sheet).
+- **protocol / Orchestrator**: Backward-compatible `LivePeerInfo` struct and optional `live_peer` field on `AssessmentState::Running`, populated during `waiting_for_peer`, `punching`, `sampling`, and P2P `saving_report`.
+- **CI/CD**: `.github/workflows/gui-ci.yml` and `.github/workflows/release.yml` extended with Windows GUI (`neteval-gui-windows-x86_64.exe`) and Android arm64 APK (`neteval-gui-android-arm64.apk`) builds.
+- **Design & Spec**: Added `ui-design.md` and `UI设计草图.drawio`.
+
+### Changed
+- Added `x86_64-pc-windows-gnu` toolchain isolation/shims (`.cargo/config.toml`, `scripts/dlltool_shim.rs`, `scripts/windres_shim.rs`, `apps/gui/src-tauri/build.rs`) and `scripts/run-tests.ps1` updates for clean Windows GNU + Tauri v2 builds and integration tests (`apps/gui/src-tauri/tests/gui_state.rs`).
+- Synchronized workspace, README, Tauri config, and npm package versions to `1.2.0`.
+
+### Fixed
+- Resolved Windows GNU `cdylib` PE export ordinal overflow (`-Wl,--exclude-all-symbols`), `COMCTL32.dll` Common Controls v6 test manifest linking (`cargo:rustc-link-arg-tests`), and Android CI `sdkmanager` NDK setup without deprecated `tools` package.
+
 ## [1.1.0] - 2026-11-25
 
 ### Added
