@@ -26,19 +26,6 @@ try {
         Write-ScriptLog "INFO" "PASS [$Label]: actual=$Actual"
     }
 
-    # Build dlltool shim for x86_64-pc-windows-gnu raw-dylib linking if absent
-    $toolsDir = Join-Path $repoRoot "target\tools"
-    New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
-    $dlltoolExe = Join-Path $toolsDir "dlltool.exe"
-    if (-not (Test-Path $dlltoolExe)) {
-        Write-ScriptLog "INFO" "building target/tools/dlltool.exe shim"
-        rustc (Join-Path $repoRoot "scripts\dlltool_shim.rs") -o $dlltoolExe
-        if ($LASTEXITCODE -ne 0) {
-            throw "FAIL [build-dlltool-shim]: exit=$LASTEXITCODE"
-        }
-    }
-    $env:PATH = "$toolsDir;$env:PATH"
-
     function Invoke-Native {
         param([scriptblock]$Cmd)
         $prev = $ErrorActionPreference
@@ -48,6 +35,62 @@ try {
         }
         finally {
             $ErrorActionPreference = $prev
+        }
+    }
+
+    # Strip WinLibs from PATH so rustc uses its bundled self-contained MinGW linker
+    $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -and ($_ -notmatch 'WinLibs') }) -join ';'
+
+    $mingwPkg = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.MSVCRT*" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($mingwPkg) {
+        $gccHit = Get-ChildItem $mingwPkg.FullName -Recurse -Filter "gcc.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($gccHit) {
+            $env:WINLIBS_BIN = $gccHit.DirectoryName
+        }
+    }
+
+    # Build dlltool & windres shims for x86_64-pc-windows-gnu if absent or outdated
+    $toolsDir = Join-Path $repoRoot "target\tools"
+    New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+    $dlltoolExe = Join-Path $toolsDir "dlltool.exe"
+    $dlltoolSrc = Join-Path $repoRoot "scripts\dlltool_shim.rs"
+    $rebuildDlltool = (-not (Test-Path $dlltoolExe)) -or (
+        (Test-Path $dlltoolSrc) -and
+        ((Get-Item $dlltoolSrc).LastWriteTimeUtc -gt (Get-Item $dlltoolExe).LastWriteTimeUtc)
+    )
+    if ($rebuildDlltool) {
+        Write-ScriptLog "INFO" "building target/tools/dlltool.exe shim"
+        rustc $dlltoolSrc -o $dlltoolExe
+        if ($LASTEXITCODE -ne 0) {
+            throw "FAIL [build-dlltool-shim]: exit=$LASTEXITCODE"
+        }
+    }
+    $windresExe = Join-Path $toolsDir "windres.exe"
+    $windresSrc = Join-Path $repoRoot "scripts\windres_shim.rs"
+    $rebuildWindres = (Test-Path $windresSrc) -and (
+        (-not (Test-Path $windresExe)) -or
+        ((Get-Item $windresSrc).LastWriteTimeUtc -gt (Get-Item $windresExe).LastWriteTimeUtc)
+    )
+    if ($rebuildWindres) {
+        Write-ScriptLog "INFO" "building target/tools/windres.exe shim"
+        rustc $windresSrc -o $windresExe
+        if ($LASTEXITCODE -ne 0) {
+            throw "FAIL [build-windres-shim]: exit=$LASTEXITCODE"
+        }
+    }
+    $env:PATH = "$toolsDir;$env:PATH"
+
+    $guiDistIndex = Join-Path $repoRoot "apps\gui\dist\index.html"
+    if (-not (Test-Path $guiDistIndex)) {
+        $guiDir = Join-Path $repoRoot "apps\gui"
+        if (Test-Path (Join-Path $guiDir "package.json")) {
+            Write-ScriptLog "INFO" "building apps/gui/dist before workspace tests"
+            Push-Location $guiDir
+            try {
+                Invoke-Native { npm run build }
+            } finally {
+                Pop-Location
+            }
         }
     }
 

@@ -5,9 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use protocol::{
     validate_room_code, AssessmentReport, AssessmentState, DEFAULT_PUBLIC_STUN_SERVERS,
-    KEEPALIVE_INTERVAL_SECS, MAX_PACKET_RATE_HZ, MAX_PUNCH_TIMEOUT_MS, MAX_WINDOW_SECS,
-    MIN_PACKET_RATE_HZ, MIN_PUNCH_TIMEOUT_MS, MIN_WINDOW_SECS, NatStatus, NatTaskInput,
-    P2pTaskInput, ProbeError, ReportSummary, TASK_ALREADY_RUNNING_MSG,
+    KEEPALIVE_INTERVAL_SECS, LivePeerInfo, MAX_PACKET_RATE_HZ, MAX_PUNCH_TIMEOUT_MS,
+    MAX_WINDOW_SECS, MIN_PACKET_RATE_HZ, MIN_PUNCH_TIMEOUT_MS, MIN_WINDOW_SECS, NatStatus,
+    NatTaskInput, P2pTaskInput, ProbeError, ReportSummary, TASK_ALREADY_RUNNING_MSG,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -101,6 +101,7 @@ impl Orchestrator {
             stage: "probing_nat".into(),
             progress_pct: 15,
             live_point: None,
+            live_peer: None,
         };
         let _ = self.inner.state_tx.send(initial_state);
         info(LOG_MOD, format!("started NAT assessment task_id={task_id}"));
@@ -159,6 +160,7 @@ impl Orchestrator {
             stage: "preparing_candidates".into(),
             progress_pct: 10,
             live_point: None,
+            live_peer: None,
         };
         let _ = self.inner.state_tx.send(initial_state);
         info(
@@ -328,6 +330,7 @@ async fn run_nat_task(
                     stage: "saving_report".into(),
                     progress_pct: 90,
                     live_point: None,
+                    live_peer: None,
                 });
 
                 let mut report = AssessmentReport {
@@ -478,11 +481,16 @@ async fn execute_p2p_lifecycle(
     }
 
     // Stage 2: waiting_for_peer (+ 15s UDP keepalive)
+    let mut live_peer = LivePeerInfo {
+        room_code: Some(input.room_code.clone()),
+        ..Default::default()
+    };
     let _ = inner.state_tx.send(AssessmentState::Running {
         task_id: task_id.to_string(),
         stage: "waiting_for_peer".into(),
         progress_pct: 25,
         live_point: None,
+        live_peer: Some(live_peer.clone()),
     });
 
     let pairing_res = {
@@ -545,11 +553,13 @@ async fn execute_p2p_lifecycle(
     };
 
     // Stage 3 & 4: punching + sampling
+    live_peer.peer_label = Some(pairing.peer_label.clone());
     let _ = inner.state_tx.send(AssessmentState::Running {
         task_id: task_id.to_string(),
         stage: "punching".into(),
         progress_pct: 45,
         live_point: None,
+        live_peer: Some(live_peer.clone()),
     });
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<P2pEvent>();
@@ -589,6 +599,7 @@ async fn execute_p2p_lifecycle(
                             total_packets,
                             ev,
                             &mut punch_confirmed,
+                            &mut live_peer,
                             &mut guard_opt,
                         ).await;
                     }
@@ -637,6 +648,7 @@ async fn execute_p2p_lifecycle(
             total_packets,
             ev,
             &mut punch_confirmed,
+            &mut live_peer,
             &mut guard_opt,
         )
         .await;
@@ -683,6 +695,7 @@ async fn execute_p2p_lifecycle(
                 stage: "saving_report".into(),
                 progress_pct: 95,
                 live_point: None,
+                live_peer: Some(live_peer.clone()),
             });
 
             let mut report = AssessmentReport {
@@ -718,11 +731,19 @@ async fn handle_p2p_event(
     total_packets: u32,
     ev: P2pEvent,
     punch_confirmed: &mut bool,
+    live_peer: &mut LivePeerInfo,
     guard_opt: &mut Option<signaling_client::SignalGuard>,
 ) {
     match ev {
-        P2pEvent::PunchSucceeded { .. } => {
+        P2pEvent::PunchSucceeded {
+            peer_addr,
+            ip_family,
+            elapsed_ms,
+        } => {
             *punch_confirmed = true;
+            live_peer.ip_family = Some(ip_family);
+            live_peer.active_peer_addr = Some(peer_addr.to_string());
+            live_peer.punch_elapsed_ms = Some(elapsed_ms);
             if let Some(g) = guard_opt.take() {
                 g.close().await;
             }
@@ -731,6 +752,7 @@ async fn handle_p2p_event(
                 stage: "sampling".into(),
                 progress_pct: 55,
                 live_point: None,
+                live_peer: Some(live_peer.clone()),
             });
         }
         P2pEvent::LatencyPoint(pt) => {
@@ -740,6 +762,7 @@ async fn handle_p2p_event(
                 stage: "sampling".into(),
                 progress_pct: pct,
                 live_point: Some(pt),
+                live_peer: Some(live_peer.clone()),
             });
         }
     }

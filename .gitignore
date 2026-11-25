@@ -2,3 +2,7 @@
 logs/
 .agent-backup/
 Cargo.lock
+.$*.drawio.bkp
+apps/gui/node_modules/
+apps/gui/dist/
+apps/gui/src-tauri/gen/schemas/

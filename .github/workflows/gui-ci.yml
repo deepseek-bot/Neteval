@@ -1,0 +1,161 @@
+name: GUI CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'feat/**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  frontend-check:
+    name: Frontend Typecheck & Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/gui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+  workspace-test:
+    name: Workspace Clippy & Tests
+    needs: frontend-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+
+      - name: Install Linux Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Build GUI dist
+        working-directory: apps/gui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Workspace Tests
+        run: cargo test --workspace
+
+  build-windows-gui:
+    name: Build Windows GUI
+    needs: frontend-check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build GUI dist
+        working-directory: apps/gui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build Windows GUI binary
+        run: cargo build --release -p neteval-gui
+
+      - name: Stage Windows GUI binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/neteval-gui.exe dist/neteval-gui-windows-x86_64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neteval-gui-windows-x86_64
+          path: dist/neteval-gui-windows-x86_64.exe
+
+  build-android-apk:
+    name: Build Android APK
+    needs: frontend-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Android NDK and build-tools
+        shell: bash
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKMANAGER=$(ls "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -n1)
+          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Configure NDK environment
+        shell: bash
+        run: |
+          NDK_DIR="$ANDROID_HOME/ndk/26.3.11579264"
+          echo "NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies & init Android project
+        working-directory: apps/gui
+        run: |
+          npm ci
+          npm run build
+          npx tauri android init --ci --skip-targets-install
+
+      - name: Build arm64 APK
+        working-directory: apps/gui
+        run: npx tauri android build --apk --target aarch64 --ci
+
+      - name: Stage APK
+        shell: bash
+        run: |
+          mkdir -p dist
+          APK_PATH=$(find apps/gui/src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n1)
+          test -n "$APK_PATH"
+          cp "$APK_PATH" dist/neteval-gui-android-arm64.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neteval-gui-android-arm64
+          path: dist/neteval-gui-android-arm64.apk

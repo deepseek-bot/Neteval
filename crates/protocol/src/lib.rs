@@ -405,6 +405,20 @@ pub struct ReportSummary {
     pub p2p_verdict: Option<P2pVerdict>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LivePeerInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_family: Option<IpFamily>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_peer_addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub punch_elapsed_ms: Option<u32>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)]
@@ -416,6 +430,8 @@ pub enum AssessmentState {
         progress_pct: u8,
         #[serde(default)]
         live_point: Option<LatencyPoint>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        live_peer: Option<LivePeerInfo>,
     },
     Completed(AssessmentReport),
     Cancelled {
@@ -552,5 +568,41 @@ mod tests {
         assert!(validate_room_code("1234567890ABCDEFG").is_err());
         assert!(validate_room_code("ab-12").is_err());
         assert!(validate_room_code("ab 12").is_err());
+    }
+
+    #[test]
+    fn assessment_state_running_backward_compatible_without_live_peer() {
+        let old_json = r#"{"running":{"task_id":"p2p_1","stage":"punching","progress_pct":45}}"#;
+        let parsed: AssessmentState = serde_json::from_str(old_json).unwrap();
+        assert_eq!(
+            parsed,
+            AssessmentState::Running {
+                task_id: "p2p_1".into(),
+                stage: "punching".into(),
+                progress_pct: 45,
+                live_point: None,
+                live_peer: None,
+            }
+        );
+
+        let with_peer = AssessmentState::Running {
+            task_id: "p2p_1".into(),
+            stage: "sampling".into(),
+            progress_pct: 60,
+            live_point: Some(LatencyPoint {
+                seq: 1,
+                elapsed_ms: 100,
+                rtt_ms: Some(12.5),
+            }),
+            live_peer: Some(LivePeerInfo {
+                room_code: Some("room1".into()),
+                peer_label: Some("bob".into()),
+                ip_family: Some(IpFamily::Ipv6),
+                active_peer_addr: Some("[2001:db8::2]:50000".into()),
+                punch_elapsed_ms: Some(85),
+            }),
+        };
+        let ser = serde_json::to_string(&with_peer).unwrap();
+        assert_eq!(serde_json::from_str::<AssessmentState>(&ser).unwrap(), with_peer);
     }
 }
