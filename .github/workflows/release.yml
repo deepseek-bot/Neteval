@@ -72,9 +72,104 @@ jobs:
           name: dist-windows-x86_64
           path: dist/
 
+  build-windows-gui:
+    name: Build Windows GUI (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build GUI dist
+        working-directory: apps/gui
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build GUI binary
+        run: cargo build --release -p neteval-gui
+
+      - name: Stage artifacts and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/neteval-gui.exe dist/neteval-gui-windows-x86_64.exe
+          $h = Get-FileHash dist/neteval-gui-windows-x86_64.exe -Algorithm SHA256
+          $line = "$($h.Hash.ToLowerInvariant())  neteval-gui-windows-x86_64.exe"
+          Set-Content -Path dist/SHA256SUMS-windows-gui.txt -Value $line -Encoding ASCII
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-gui
+          path: dist/
+
+  build-android-apk:
+    name: Build Android APK (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK and build-tools
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11579264"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Configure NDK environment
+        shell: bash
+        run: |
+          NDK_DIR=$(ls -d "$ANDROID_HOME/ndk/"* | sort -V | tail -n1)
+          echo "NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+
+      - name: Install frontend dependencies & init Android project
+        working-directory: apps/gui
+        run: |
+          npm ci
+          npm run build
+          npx tauri android init
+
+      - name: Build arm64 APK
+        working-directory: apps/gui
+        run: npx tauri android build --apk --target aarch64
+
+      - name: Stage artifacts and checksums
+        shell: bash
+        run: |
+          mkdir -p dist
+          APK_PATH=$(find apps/gui/src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n1)
+          test -n "$APK_PATH"
+          cp "$APK_PATH" dist/neteval-gui-android-arm64.apk
+          (cd dist && sha256sum neteval-gui-android-arm64.apk > SHA256SUMS-android.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-android-arm64
+          path: dist/
+
   release:
     name: Publish GitHub Release
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, build-windows-gui, build-android-apk]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -86,8 +181,8 @@ jobs:
       - name: Combine checksums
         shell: bash
         run: |
-          cat release-assets/SHA256SUMS-linux.txt release-assets/SHA256SUMS-windows.txt > release-assets/SHA256SUMS.txt
-          rm -f release-assets/SHA256SUMS-linux.txt release-assets/SHA256SUMS-windows.txt
+          cat release-assets/SHA256SUMS-*.txt > release-assets/SHA256SUMS.txt
+          rm -f release-assets/SHA256SUMS-*.txt
 
       - uses: softprops/action-gh-release@v2
         with:
