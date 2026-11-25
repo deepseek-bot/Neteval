@@ -1,0 +1,4 @@
+/target/
+logs/
+.agent-backup/
+Cargo.lock

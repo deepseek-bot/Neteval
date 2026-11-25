@@ -1,0 +1,15 @@
+[package]
+name = "cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "neteval-cli"
+path = "src/main.rs"
+
+[dependencies]
+client-core.workspace = true
+protocol.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+clap.workspace = true

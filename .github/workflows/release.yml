@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux (musl x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install musl-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Build server and cli (musl)
+        run: cargo build --release --target x86_64-unknown-linux-musl -p server -p cli
+
+      - name: Stage artifacts and checksums
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/neteval-server dist/neteval-server-linux-x86_64
+          cp target/x86_64-unknown-linux-musl/release/neteval-cli dist/neteval-cli-linux-x86_64
+          chmod +x dist/neteval-server-linux-x86_64 dist/neteval-cli-linux-x86_64
+          (cd dist && sha256sum neteval-server-linux-x86_64 neteval-cli-linux-x86_64 > SHA256SUMS-linux.txt)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-x86_64
+          path: dist/
+
+  build-windows:
+    name: Build Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build server and cli
+        run: cargo build --release -p server -p cli
+
+      - name: Stage artifacts and checksums
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/neteval-server.exe dist/neteval-server-windows-x86_64.exe
+          Copy-Item target/release/neteval-cli.exe dist/neteval-cli-windows-x86_64.exe
+          $lines = @(
+            (Get-FileHash dist/neteval-server-windows-x86_64.exe -Algorithm SHA256),
+            (Get-FileHash dist/neteval-cli-windows-x86_64.exe -Algorithm SHA256)
+          ) | ForEach-Object {
+            "$($_.Hash.ToLowerInvariant())  $([System.IO.Path]::GetFileName($_.Path))"
+          }
+          Set-Content -Path dist/SHA256SUMS-windows.txt -Value $lines -Encoding ASCII
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-x86_64
+          path: dist/
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Combine checksums
+        shell: bash
+        run: |
+          cat release-assets/SHA256SUMS-linux.txt release-assets/SHA256SUMS-windows.txt > release-assets/SHA256SUMS.txt
+          rm -f release-assets/SHA256SUMS-linux.txt release-assets/SHA256SUMS-windows.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: NetEval ${{ github.ref_name }}
+          files: release-assets/*
+          generate_release_notes: true
