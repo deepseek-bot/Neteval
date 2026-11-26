@@ -147,13 +147,52 @@ jobs:
         working-directory: apps/gui
         run: npx tauri android build --apk --target aarch64 --ci
 
-      - name: Stage APK
+      - name: Sign, verify, and stage APK
         shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
+          set -euo pipefail
           mkdir -p dist
+          trap 'rm -f /tmp/neteval-release.p12 /tmp/ci-ephemeral.p12 dist/neteval-gui-android-arm64-aligned.apk' EXIT
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/34.0.0"
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            if [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ]; then
+              echo "ERROR: ANDROID_KEYSTORE_PASSWORD and ANDROID_KEY_ALIAS must be set when ANDROID_KEYSTORE_BASE64 is configured." >&2
+              exit 1
+            fi
+            KS_PATH="/tmp/neteval-release.p12"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 --decode > "$KS_PATH"
+          else
+            echo "Notice: ANDROID_KEYSTORE_BASE64 not set; generating ephemeral CI keystore for verification."
+            KS_PATH="/tmp/ci-ephemeral.p12"
+            rm -f "$KS_PATH"
+            export ANDROID_KEYSTORE_PASSWORD="ci-ephemeral-password"
+            ANDROID_KEY_ALIAS="ci-ephemeral"
+            keytool -genkeypair \
+              -keystore "$KS_PATH" \
+              -storetype PKCS12 \
+              -alias "$ANDROID_KEY_ALIAS" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 1 \
+              -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+              -dname "CN=NetEval CI"
+          fi
           APK_PATH=$(find apps/gui/src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n1)
           test -n "$APK_PATH"
-          cp "$APK_PATH" dist/neteval-gui-android-arm64.apk
+          "$BUILD_TOOLS/zipalign" -p -f 4 "$APK_PATH" dist/neteval-gui-android-arm64-aligned.apk
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks "$KS_PATH" \
+            --ks-type PKCS12 \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --out dist/neteval-gui-android-arm64.apk \
+            dist/neteval-gui-android-arm64-aligned.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist/neteval-gui-android-arm64.apk
 
       - uses: actions/upload-artifact@v4
         with:

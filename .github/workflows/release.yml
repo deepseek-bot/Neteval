@@ -158,13 +158,34 @@ jobs:
         working-directory: apps/gui
         run: npx tauri android build --apk --target aarch64 --ci
 
-      - name: Stage artifacts and checksums
+      - name: Sign, verify, and stage artifacts and checksums
         shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
+          set -euo pipefail
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ]; then
+            echo "ERROR: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, and ANDROID_KEY_ALIAS secrets must all be set before releasing Android APK." >&2
+            exit 1
+          fi
           mkdir -p dist
+          trap 'rm -f /tmp/neteval-release.p12 dist/neteval-gui-android-arm64-aligned.apk' EXIT
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/34.0.0"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '\r\n ' | base64 --decode > /tmp/neteval-release.p12
           APK_PATH=$(find apps/gui/src-tauri/gen/android/app/build/outputs/apk -name "*.apk" | head -n1)
           test -n "$APK_PATH"
-          cp "$APK_PATH" dist/neteval-gui-android-arm64.apk
+          "$BUILD_TOOLS/zipalign" -p -f 4 "$APK_PATH" dist/neteval-gui-android-arm64-aligned.apk
+          "$BUILD_TOOLS/apksigner" sign \
+            --ks /tmp/neteval-release.p12 \
+            --ks-type PKCS12 \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --out dist/neteval-gui-android-arm64.apk \
+            dist/neteval-gui-android-arm64-aligned.apk
+          "$BUILD_TOOLS/apksigner" verify --verbose --print-certs dist/neteval-gui-android-arm64.apk
           (cd dist && sha256sum neteval-gui-android-arm64.apk > SHA256SUMS-android.txt)
 
       - uses: actions/upload-artifact@v4
