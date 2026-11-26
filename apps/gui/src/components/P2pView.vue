@@ -565,4 +565,9 @@ function onToggleAction(): void {
   min-height: 240px;
   display: flex;
 }
+
+.p2p-workspace.mobile .chart-area {
+  flex: 0 0 240px;
+  min-height: 220px;
+}
 </style>

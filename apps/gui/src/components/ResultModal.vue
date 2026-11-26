@@ -113,7 +113,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown));
         </div>
 
         <div class="modal-chart">
-          <LatencyChart :series="report.p2p_report.series" />
+          <LatencyChart :series="report.p2p_report.series" :compact="isMobile" />
         </div>
       </template>
 

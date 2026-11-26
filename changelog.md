@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.3.1] - 2026-11-26
+
+### Fixed
+- **Mobile & Responsive Chart UI (`apps/gui/src/components/LatencyChart.vue`, `P2pView.vue`, `ResultModal.vue`)**: Replaced fixed `800x260` `preserveAspectRatio="none"` SVG scaling with a `ResizeObserver`-driven 1:1 `viewBox`, anchored X-axis edge labels against clipping, and constrained portrait mobile chart height to prevent vertical stretching of axis text and curves.
+
 ## [1.3.0] - 2026-11-26
 
 ### Added
