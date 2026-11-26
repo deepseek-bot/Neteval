@@ -3,6 +3,7 @@ import { computed } from 'vue';
 import {
   appStore,
   applyPreset,
+  applyServerPaste,
   isRunning,
   runNatTest,
   savePrefs,
@@ -35,6 +36,13 @@ function setMode(useVps: boolean): void {
   appStore.natForm.useSelfHostedVps = useVps;
   savePrefs();
 }
+
+function onHostPaste(e: ClipboardEvent): void {
+  const text = e.clipboardData?.getData('text') ?? '';
+  if (text && applyServerPaste(text)) {
+    e.preventDefault();
+  }
+}
 </script>
 
 <template>
@@ -47,7 +55,7 @@ function setMode(useVps: boolean): void {
           :disabled="runningThis"
           @click="setMode(false)"
         >
-          零 VPS 公共 STUN 模式
+          公共 STUN 初步判定
         </button>
         <button
           type="button"
@@ -55,7 +63,7 @@ function setMode(useVps: boolean): void {
           :disabled="runningThis"
           @click="setMode(true)"
         >
-          自建 S2 VPS 增强模式
+          自建服务器精细判定
         </button>
       </div>
 
@@ -72,23 +80,16 @@ function setMode(useVps: boolean): void {
           </option>
         </select>
         <input
-          v-model="appStore.natForm.primary_v4_p1"
+          v-model="appStore.serverForm.host"
           type="text"
           class="mono"
           :disabled="runningThis"
-          placeholder="主端口 p1 (host:34780)"
+          placeholder="服务器域名或 IP"
+          @paste="onHostPaste"
           @change="savePrefs"
         />
         <input
-          v-model="appStore.natForm.primary_v4_p2"
-          type="text"
-          class="mono"
-          :disabled="runningThis"
-          placeholder="主端口 p2 (host:34781)"
-          @change="savePrefs"
-        />
-        <input
-          v-model="appStore.natForm.token"
+          v-model="appStore.serverForm.token"
           type="password"
           :disabled="runningThis"
           placeholder="口令(可选)"

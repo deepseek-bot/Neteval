@@ -11,6 +11,9 @@ import {
   subscribeAssessmentState,
 } from '../api/tauri';
 import {
+  DEFAULT_PROBE_PORT_P1,
+  DEFAULT_PROBE_PORT_P2,
+  DEFAULT_SIGNALING_PORT,
   DEFAULT_STUN_SERVERS,
   type AssessmentReport,
   type AssessmentState,
@@ -20,13 +23,21 @@ import {
   type NodePreset,
   type P2pTaskInput,
   type ProbeError,
+  type PunchStrategy,
   type ReportSummary,
+  type ServerConfig,
 } from '../types/protocol';
 import {
+  buildWsUrl,
+  formatHostPort,
   formatProbeError,
   generateRoomCode,
+  isIpv4Literal,
+  isIpv6Literal,
+  normalizeHost,
+  parseServerPaste,
   validateRoomCode,
-  validateWsUrl,
+  validateServerConfig,
 } from '../utils/format';
 
 const PREFS_KEY = 'neteval_gui_prefs_v1';
@@ -34,13 +45,11 @@ const PREFS_KEY = 'neteval_gui_prefs_v1';
 interface StoredPrefs {
   presets: NodePreset[];
   selectedPresetId: string;
+  server: ServerConfig;
   p2p: {
-    signaling_ws_url: string;
     room_code: string;
     peer_label: string;
-    token: string;
-    echo_udp_v4: string;
-    echo_udp_v6: string;
+    strategy: PunchStrategy;
     stun_text: string;
     candidate_timeout_ms: number;
     pair_timeout_secs: number;
@@ -50,11 +59,6 @@ interface StoredPrefs {
   };
   nat: {
     useSelfHostedVps: boolean;
-    primary_v4_p1: string;
-    primary_v4_p2: string;
-    primary_v6: string;
-    helper_v4_p1: string;
-    token: string;
     stun_text: string;
     timeout_ms: number;
   };
@@ -64,13 +68,19 @@ function defaultPrefs(): StoredPrefs {
   return {
     presets: [],
     selectedPresetId: '',
+    server: {
+      protocol: 'ws',
+      host: '',
+      ws_port: DEFAULT_SIGNALING_PORT,
+      probe_p1_port: DEFAULT_PROBE_PORT_P1,
+      probe_p2_port: DEFAULT_PROBE_PORT_P2,
+      token: '',
+      helper_v4_p1: '',
+    },
     p2p: {
-      signaling_ws_url: '',
       room_code: generateRoomCode(8),
       peer_label: 'player-1',
-      token: '',
-      echo_udp_v4: '',
-      echo_udp_v6: '',
+      strategy: 'standard_udp_v6_first',
       stun_text: DEFAULT_STUN_SERVERS.join(', '),
       candidate_timeout_ms: 2500,
       pair_timeout_secs: 120,
@@ -80,14 +90,99 @@ function defaultPrefs(): StoredPrefs {
     },
     nat: {
       useSelfHostedVps: false,
-      primary_v4_p1: '',
-      primary_v4_p2: '',
-      primary_v6: '',
-      helper_v4_p1: '',
-      token: '',
       stun_text: DEFAULT_STUN_SERVERS.join(', '),
       timeout_ms: 2500,
     },
+  };
+}
+
+function validPortOr(val: unknown, fallback: number): number {
+  const n = Number(val);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : fallback;
+}
+
+function extractHostPort(raw: unknown): { host: string; port?: number } | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const res = parseServerPaste(raw);
+  if (!res.ok || !res.host) return null;
+  return { host: res.host, port: res.ws_port };
+}
+
+function normalizeStrategy(val: unknown): PunchStrategy {
+  if (val === 'ipv4_only' || val === 'ipv6_only' || val === 'standard_udp_v6_first') {
+    return val;
+  }
+  return 'standard_udp_v6_first';
+}
+
+function migrateLegacyServer(
+  legacyP2p: Record<string, unknown>,
+  legacyNat: Record<string, unknown>,
+  fallback: ServerConfig,
+): ServerConfig {
+  const wsInfo = extractHostPort(legacyP2p.signaling_ws_url);
+  const p1Info =
+    extractHostPort(legacyNat.primary_v4_p1) ??
+    extractHostPort(legacyP2p.echo_udp_v4) ??
+    extractHostPort(legacyNat.primary_v6) ??
+    extractHostPort(legacyP2p.echo_udp_v6);
+  const p2Info = extractHostPort(legacyNat.primary_v4_p2);
+
+  const token =
+    (typeof legacyP2p.token === 'string' && legacyP2p.token) ||
+    (typeof legacyNat.token === 'string' ? legacyNat.token : '');
+
+  return {
+    protocol: 'ws',
+    host: wsInfo?.host || p1Info?.host || p2Info?.host || fallback.host,
+    ws_port: wsInfo?.port ?? fallback.ws_port,
+    probe_p1_port: p1Info?.port ?? fallback.probe_p1_port,
+    probe_p2_port: p2Info?.port ?? fallback.probe_p2_port,
+    token,
+    helper_v4_p1:
+      typeof legacyNat.helper_v4_p1 === 'string'
+        ? legacyNat.helper_v4_p1
+        : fallback.helper_v4_p1,
+  };
+}
+
+function migratePreset(raw: unknown): NodePreset | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.id !== 'string' || typeof obj.name !== 'string') return null;
+
+  if (typeof obj.host === 'string') {
+    return {
+      id: obj.id,
+      name: obj.name,
+      protocol: 'ws',
+      host: obj.host,
+      ws_port: validPortOr(obj.ws_port, DEFAULT_SIGNALING_PORT),
+      probe_p1_port: validPortOr(obj.probe_p1_port, DEFAULT_PROBE_PORT_P1),
+      probe_p2_port: validPortOr(obj.probe_p2_port, DEFAULT_PROBE_PORT_P2),
+      token: typeof obj.token === 'string' ? obj.token : '',
+      helper_v4_p1: typeof obj.helper_v4_p1 === 'string' ? obj.helper_v4_p1 : '',
+    };
+  }
+
+  const wsInfo = extractHostPort(obj.signaling_ws_url);
+  const p1Info =
+    extractHostPort(obj.primary_v4_p1) ??
+    extractHostPort(obj.echo_udp_v4) ??
+    extractHostPort(obj.primary_v6) ??
+    extractHostPort(obj.echo_udp_v6);
+  const p2Info = extractHostPort(obj.primary_v4_p2);
+
+  return {
+    id: obj.id,
+    name: obj.name,
+    protocol: 'ws',
+    host: wsInfo?.host || p1Info?.host || p2Info?.host || '',
+    ws_port: wsInfo?.port ?? DEFAULT_SIGNALING_PORT,
+    probe_p1_port: p1Info?.port ?? DEFAULT_PROBE_PORT_P1,
+    probe_p2_port: p2Info?.port ?? DEFAULT_PROBE_PORT_P2,
+    token: typeof obj.token === 'string' ? obj.token : '',
+    helper_v4_p1: typeof obj.helper_v4_p1 === 'string' ? obj.helper_v4_p1 : '',
   };
 }
 
@@ -96,15 +191,78 @@ function loadPrefs(): StoredPrefs {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     if (!raw) return base;
-    const parsed = JSON.parse(raw) as Partial<StoredPrefs>;
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const rawP2p =
+      parsed.p2p && typeof parsed.p2p === 'object'
+        ? (parsed.p2p as Record<string, unknown>)
+        : {};
+    const rawNat =
+      parsed.nat && typeof parsed.nat === 'object'
+        ? (parsed.nat as Record<string, unknown>)
+        : {};
+    const rawServer =
+      parsed.server && typeof parsed.server === 'object'
+        ? (parsed.server as Record<string, unknown>)
+        : null;
+
+    const server: ServerConfig = rawServer
+      ? {
+          protocol: 'ws',
+          host: typeof rawServer.host === 'string' ? rawServer.host : base.server.host,
+          ws_port: validPortOr(rawServer.ws_port, base.server.ws_port),
+          probe_p1_port: validPortOr(rawServer.probe_p1_port, base.server.probe_p1_port),
+          probe_p2_port: validPortOr(rawServer.probe_p2_port, base.server.probe_p2_port),
+          token: typeof rawServer.token === 'string' ? rawServer.token : base.server.token,
+          helper_v4_p1:
+            typeof rawServer.helper_v4_p1 === 'string'
+              ? rawServer.helper_v4_p1
+              : base.server.helper_v4_p1,
+        }
+      : migrateLegacyServer(rawP2p, rawNat, base.server);
+
+    const presets = Array.isArray(parsed.presets)
+      ? parsed.presets
+          .map(migratePreset)
+          .filter((p): p is NodePreset => p !== null)
+      : base.presets;
+
     return {
-      presets: Array.isArray(parsed.presets) ? parsed.presets : base.presets,
+      presets,
       selectedPresetId:
         typeof parsed.selectedPresetId === 'string'
           ? parsed.selectedPresetId
           : base.selectedPresetId,
-      p2p: { ...base.p2p, ...(parsed.p2p ?? {}) },
-      nat: { ...base.nat, ...(parsed.nat ?? {}) },
+      server,
+      p2p: {
+        room_code:
+          typeof rawP2p.room_code === 'string' && rawP2p.room_code
+            ? rawP2p.room_code
+            : base.p2p.room_code,
+        peer_label:
+          typeof rawP2p.peer_label === 'string' && rawP2p.peer_label
+            ? rawP2p.peer_label
+            : base.p2p.peer_label,
+        strategy: normalizeStrategy(rawP2p.strategy),
+        stun_text:
+          typeof rawP2p.stun_text === 'string' ? rawP2p.stun_text : base.p2p.stun_text,
+        candidate_timeout_ms:
+          Number(rawP2p.candidate_timeout_ms) || base.p2p.candidate_timeout_ms,
+        pair_timeout_secs:
+          Number(rawP2p.pair_timeout_secs) || base.p2p.pair_timeout_secs,
+        punch_timeout_ms:
+          Number(rawP2p.punch_timeout_ms) || base.p2p.punch_timeout_ms,
+        window_secs: Number(rawP2p.window_secs) || base.p2p.window_secs,
+        packet_rate_hz: Number(rawP2p.packet_rate_hz) || base.p2p.packet_rate_hz,
+      },
+      nat: {
+        useSelfHostedVps:
+          typeof rawNat.useSelfHostedVps === 'boolean'
+            ? rawNat.useSelfHostedVps
+            : base.nat.useSelfHostedVps,
+        stun_text:
+          typeof rawNat.stun_text === 'string' ? rawNat.stun_text : base.nat.stun_text,
+        timeout_ms: Number(rawNat.timeout_ms) || base.nat.timeout_ms,
+      },
     };
   } catch {
     return base;
@@ -135,6 +293,7 @@ export const appStore = reactive({
 
   presets: initialPrefs.presets,
   selectedPresetId: initialPrefs.selectedPresetId,
+  serverForm: initialPrefs.server,
   p2pForm: initialPrefs.p2p,
   natForm: initialPrefs.nat,
 });
@@ -161,6 +320,7 @@ export function savePrefs(): void {
     const payload: StoredPrefs = {
       presets: appStore.presets,
       selectedPresetId: appStore.selectedPresetId,
+      server: appStore.serverForm,
       p2p: appStore.p2pForm,
       nat: appStore.natForm,
     };
@@ -348,6 +508,27 @@ export async function removeHistoryItem(id: string): Promise<void> {
   }
 }
 
+export function applyServerPaste(raw: string): boolean {
+  const res = parseServerPaste(raw);
+  if (!res.ok) {
+    appStore.errorNotice = res.error;
+    return true;
+  }
+  if (res.protocol === undefined && res.ws_port === undefined) {
+    return false;
+  }
+  if (res.protocol) {
+    appStore.serverForm.protocol = res.protocol;
+  }
+  appStore.serverForm.host = res.host;
+  if (res.ws_port !== undefined) {
+    appStore.serverForm.ws_port = res.ws_port;
+  }
+  appStore.errorNotice = '';
+  savePrefs();
+  return true;
+}
+
 export function applyPreset(presetId: string): void {
   appStore.selectedPresetId = presetId;
   const preset = appStore.presets.find((p) => p.id === presetId);
@@ -355,16 +536,14 @@ export function applyPreset(presetId: string): void {
     savePrefs();
     return;
   }
-  appStore.p2pForm.signaling_ws_url = preset.signaling_ws_url;
-  appStore.p2pForm.echo_udp_v4 = preset.echo_udp_v4;
-  appStore.p2pForm.echo_udp_v6 = preset.echo_udp_v6;
-  appStore.p2pForm.token = preset.token;
-  appStore.natForm.primary_v4_p1 = preset.primary_v4_p1;
-  appStore.natForm.primary_v4_p2 = preset.primary_v4_p2;
-  appStore.natForm.primary_v6 = preset.primary_v6;
-  appStore.natForm.helper_v4_p1 = preset.helper_v4_p1;
-  appStore.natForm.token = preset.token;
-  if (preset.primary_v4_p1.trim()) {
+  appStore.serverForm.protocol = preset.protocol;
+  appStore.serverForm.host = preset.host;
+  appStore.serverForm.ws_port = preset.ws_port;
+  appStore.serverForm.probe_p1_port = preset.probe_p1_port;
+  appStore.serverForm.probe_p2_port = preset.probe_p2_port;
+  appStore.serverForm.token = preset.token;
+  appStore.serverForm.helper_v4_p1 = preset.helper_v4_p1;
+  if (preset.host.trim()) {
     appStore.natForm.useSelfHostedVps = true;
   }
   savePrefs();
@@ -379,14 +558,13 @@ export function saveCurrentAsPreset(name: string): string | null {
   const preset: NodePreset = {
     id: existing ? existing.id : `preset_${Date.now()}`,
     name: cleanName,
-    signaling_ws_url: appStore.p2pForm.signaling_ws_url.trim(),
-    echo_udp_v4: appStore.p2pForm.echo_udp_v4.trim(),
-    echo_udp_v6: appStore.p2pForm.echo_udp_v6.trim(),
-    primary_v4_p1: appStore.natForm.primary_v4_p1.trim(),
-    primary_v4_p2: appStore.natForm.primary_v4_p2.trim(),
-    primary_v6: appStore.natForm.primary_v6.trim(),
-    helper_v4_p1: appStore.natForm.helper_v4_p1.trim(),
-    token: (appStore.p2pForm.token || appStore.natForm.token).trim(),
+    protocol: appStore.serverForm.protocol,
+    host: normalizeHost(appStore.serverForm.host),
+    ws_port: Number(appStore.serverForm.ws_port) || DEFAULT_SIGNALING_PORT,
+    probe_p1_port: Number(appStore.serverForm.probe_p1_port) || DEFAULT_PROBE_PORT_P1,
+    probe_p2_port: Number(appStore.serverForm.probe_p2_port) || DEFAULT_PROBE_PORT_P2,
+    token: appStore.serverForm.token.trim(),
+    helper_v4_p1: appStore.serverForm.helper_v4_p1.trim(),
   };
   if (existing) {
     appStore.presets = appStore.presets.map((p) => (p.id === existing.id ? preset : p));
@@ -410,11 +588,23 @@ export async function runP2pTest(): Promise<void> {
   appStore.errorNotice = '';
   appStore.statusNotice = '';
 
-  const wsErr = validateWsUrl(appStore.p2pForm.signaling_ws_url);
+  const wsPort = Number(appStore.serverForm.ws_port);
+  const wsErr = validateServerConfig(
+    appStore.serverForm.protocol,
+    appStore.serverForm.host,
+    wsPort,
+  );
   if (wsErr) {
     appStore.errorNotice = wsErr;
     return;
   }
+
+  const p1 = Number(appStore.serverForm.probe_p1_port);
+  if (!Number.isInteger(p1) || p1 < 1 || p1 > 65535) {
+    appStore.errorNotice = 'UDP 探测主端口需为 1~65535 的整数';
+    return;
+  }
+
   const roomErr = validateRoomCode(appStore.p2pForm.room_code.trim());
   if (roomErr) {
     appStore.errorNotice = roomErr;
@@ -427,24 +617,31 @@ export async function runP2pTest(): Promise<void> {
 
   savePrefs();
 
+  const host = normalizeHost(appStore.serverForm.host);
+  const p1Endpoint = formatHostPort(host, p1);
+  let echo_udp_v4: string | null = p1Endpoint;
+  let echo_udp_v6: string | null = p1Endpoint;
+  if (isIpv4Literal(host)) {
+    echo_udp_v6 = null;
+  } else if (isIpv6Literal(host)) {
+    echo_udp_v4 = null;
+  }
+
+  const token = appStore.serverForm.token.trim();
   const input: P2pTaskInput = {
-    signaling_ws_url: appStore.p2pForm.signaling_ws_url.trim(),
+    signaling_ws_url: buildWsUrl(appStore.serverForm.protocol, host, wsPort),
     room_code: appStore.p2pForm.room_code.trim(),
-    token: appStore.p2pForm.token.trim() ? appStore.p2pForm.token.trim() : null,
+    token: token ? token : null,
     peer_label: appStore.p2pForm.peer_label.trim(),
-    echo_udp_v4: appStore.p2pForm.echo_udp_v4.trim()
-      ? appStore.p2pForm.echo_udp_v4.trim()
-      : null,
-    echo_udp_v6: appStore.p2pForm.echo_udp_v6.trim()
-      ? appStore.p2pForm.echo_udp_v6.trim()
-      : null,
+    echo_udp_v4,
+    echo_udp_v6,
     public_stun_servers: parseStunList(appStore.p2pForm.stun_text),
     candidate_timeout_ms: Number(appStore.p2pForm.candidate_timeout_ms) || 2500,
     pair_timeout_secs: Math.min(120, Math.max(1, Number(appStore.p2pForm.pair_timeout_secs) || 120)),
     punch_timeout_ms: Math.min(15000, Math.max(3000, Number(appStore.p2pForm.punch_timeout_ms) || 6000)),
     window_secs: Math.min(60, Math.max(5, Number(appStore.p2pForm.window_secs) || 20)),
     packet_rate_hz: Math.min(20, Math.max(1, Number(appStore.p2pForm.packet_rate_hz) || 10)),
-    strategy: 'standard_udp_v6_first',
+    strategy: appStore.p2pForm.strategy,
   };
 
   try {
@@ -459,19 +656,72 @@ export async function runP2pTest(): Promise<void> {
 export async function runNatTest(): Promise<void> {
   appStore.errorNotice = '';
   appStore.statusNotice = '';
-  savePrefs();
 
   const useVps = appStore.natForm.useSelfHostedVps;
   const opt = (s: string) => (s.trim() ? s.trim() : null);
 
+  let primary_v4_p1: string | null = null;
+  let primary_v4_p2: string | null = null;
+  let primary_v6: string | null = null;
+  let helper_v4_p1: string | null = null;
+  let token: string | null = null;
+
+  if (useVps) {
+    const host = normalizeHost(appStore.serverForm.host);
+    if (!host) {
+      appStore.errorNotice = '请填写自建服务器域名或 IP';
+      return;
+    }
+    const hostErr = validateServerConfig(appStore.serverForm.protocol, host, 1);
+    if (hostErr) {
+      appStore.errorNotice = hostErr;
+      return;
+    }
+
+    const p1 = Number(appStore.serverForm.probe_p1_port);
+    const p2 = Number(appStore.serverForm.probe_p2_port);
+    if (
+      !Number.isInteger(p1) ||
+      p1 < 1 ||
+      p1 > 65535 ||
+      !Number.isInteger(p2) ||
+      p2 < 1 ||
+      p2 > 65535
+    ) {
+      appStore.errorNotice = 'UDP 探测端口需为 1~65535 的整数';
+      return;
+    }
+    if (p1 === p2) {
+      appStore.errorNotice = 'UDP 探测主端口与副端口不能相同';
+      return;
+    }
+
+    const ep1 = formatHostPort(host, p1);
+    const ep2 = formatHostPort(host, p2);
+    primary_v4_p1 = ep1;
+    primary_v4_p2 = ep2;
+    primary_v6 = ep1;
+    if (isIpv4Literal(host)) {
+      primary_v6 = null;
+    } else if (isIpv6Literal(host)) {
+      primary_v4_p1 = null;
+      primary_v4_p2 = null;
+    }
+
+    helper_v4_p1 = opt(appStore.serverForm.helper_v4_p1);
+    token = opt(appStore.serverForm.token);
+  }
+
+  savePrefs();
+
   try {
     const taskId = await startNatAssessment({
       public_stun_servers: parseStunList(appStore.natForm.stun_text),
-      primary_v4_p1: useVps ? opt(appStore.natForm.primary_v4_p1) : null,
-      primary_v4_p2: useVps ? opt(appStore.natForm.primary_v4_p2) : null,
-      primary_v6: useVps ? opt(appStore.natForm.primary_v6) : null,
-      helper_v4_p1: useVps ? opt(appStore.natForm.helper_v4_p1) : null,
-      token: useVps ? opt(appStore.natForm.token) : null,
+      primary_v4_p1,
+      primary_v4_p2,
+      primary_v6,
+      helper_v4_p1,
+      token,
       timeout_ms: Math.max(300, Number(appStore.natForm.timeout_ms) || 2500),
     });
     resetForNewTask(taskId);

@@ -39,9 +39,26 @@ enum Commands {
     History(HistoryArgs),
 }
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CliPunchStrategy {
+    V6First,
+    Ipv4Only,
+    Ipv6Only,
+}
+
+impl From<CliPunchStrategy> for PunchStrategy {
+    fn from(value: CliPunchStrategy) -> Self {
+        match value {
+            CliPunchStrategy::V6First => PunchStrategy::StandardUdpV6First,
+            CliPunchStrategy::Ipv4Only => PunchStrategy::Ipv4Only,
+            CliPunchStrategy::Ipv6Only => PunchStrategy::Ipv6Only,
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 struct P2pArgs {
-    /// Signaling server WebSocket URL (e.g. ws://127.0.0.1:34781)
+    /// Signaling server WebSocket URL (e.g. ws://127.0.0.1:34780)
     #[arg(long)]
     ws: String,
 
@@ -92,6 +109,10 @@ struct P2pArgs {
     /// Packet sampling rate in Hz (1..=20)
     #[arg(long, default_value_t = DEFAULT_PACKET_RATE_HZ)]
     rate_hz: u32,
+
+    /// P2P hole-punching IP stack strategy
+    #[arg(long, value_enum, default_value_t = CliPunchStrategy::V6First)]
+    strategy: CliPunchStrategy,
 }
 
 #[derive(Debug, Args)]
@@ -239,7 +260,7 @@ async fn run_p2p_command(orchestrator: Orchestrator, args: P2pArgs, json: bool) 
         punch_timeout_ms: args.punch_timeout_ms,
         window_secs: args.window_secs,
         packet_rate_hz: args.rate_hz,
-        strategy: PunchStrategy::StandardUdpV6First,
+        strategy: args.strategy.into(),
     };
 
     let mut rx = orchestrator.subscribe();

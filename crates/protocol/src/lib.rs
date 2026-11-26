@@ -19,6 +19,9 @@ pub const MAX_WINDOW_SECS: u32 = 60;
 pub const DEFAULT_PACKET_RATE_HZ: u32 = 10;
 pub const MIN_PACKET_RATE_HZ: u32 = 1;
 pub const MAX_PACKET_RATE_HZ: u32 = 20;
+pub const DEFAULT_PROBE_PORT_P1: u16 = 34778;
+pub const DEFAULT_PROBE_PORT_P2: u16 = 34779;
+pub const DEFAULT_SIGNALING_WS_PORT: u16 = 34780;
 
 pub const DEFAULT_PUBLIC_STUN_SERVERS: &[&str] = &[
     "stun.qq.com:3478",
@@ -218,6 +221,8 @@ pub enum ServerSignalMsg {
 pub enum PunchStrategy {
     #[default]
     StandardUdpV6First,
+    Ipv4Only,
+    Ipv6Only,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

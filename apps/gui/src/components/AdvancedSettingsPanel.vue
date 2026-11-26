@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import {
   appStore,
   applyPreset,
+  applyServerPaste,
   deletePreset,
   saveCurrentAsPreset,
   savePrefs,
 } from '../stores/appState';
-import { validateWsUrl } from '../utils/format';
+import { SIGNALING_PROTOCOLS, type PunchStrategy } from '../types/protocol';
+import { formatPunchStrategy, validateServerConfig } from '../utils/format';
 
 defineProps<{
   asDrawer?: boolean;
@@ -17,8 +19,23 @@ const emit = defineEmits<{
   close: [];
 }>();
 
+const PUNCH_STRATEGIES: PunchStrategy[] = [
+  'standard_udp_v6_first',
+  'ipv4_only',
+  'ipv6_only',
+];
+
 const presetName = ref('');
 const presetMsg = ref('');
+
+const serverValidationError = computed(() => {
+  if (!appStore.serverForm.host.trim()) return null;
+  return validateServerConfig(
+    appStore.serverForm.protocol,
+    appStore.serverForm.host,
+    Number(appStore.serverForm.ws_port),
+  );
+});
 
 function onSavePreset(): void {
   const err = saveCurrentAsPreset(presetName.value);
@@ -28,10 +45,10 @@ function onSavePreset(): void {
   }
 }
 
-function reuseNatPrimaryV4(): void {
-  if (appStore.natForm.primary_v4_p1.trim()) {
-    appStore.p2pForm.echo_udp_v4 = appStore.natForm.primary_v4_p1.trim();
-    savePrefs();
+function onHostPaste(e: ClipboardEvent): void {
+  const text = e.clipboardData?.getData('text') ?? '';
+  if (text && applyServerPaste(text)) {
+    e.preventDefault();
   }
 }
 </script>
@@ -76,64 +93,117 @@ function reuseNatPrimaryV4(): void {
       </section>
 
       <section class="adv-section">
-        <div class="sec-title">P2P 信令与回显</div>
+        <div class="sec-title">自建服务器</div>
 
-        <label class="field">
-          <span>信令地址 (ws://)</span>
-          <input
-            v-model="appStore.p2pForm.signaling_ws_url"
-            type="text"
-            class="mono"
-            placeholder="ws://1.2.3.4:34781"
-            @change="savePrefs"
-          />
-          <span
-            v-if="
-              appStore.p2pForm.signaling_ws_url &&
-              validateWsUrl(appStore.p2pForm.signaling_ws_url)
-            "
-            class="field-err"
-          >
-            {{ validateWsUrl(appStore.p2pForm.signaling_ws_url) }}
-          </span>
-        </label>
-
-        <label class="field">
-          <div class="label-row">
-            <span>S2 IPv4 回显 (`echo_udp_v4`)</span>
-            <button
-              v-if="appStore.natForm.primary_v4_p1.trim()"
-              type="button"
-              class="btn-link"
-              @click="reuseNatPrimaryV4"
+        <div class="field">
+          <span>信令地址与端口</span>
+          <div class="endpoint-row">
+            <select
+              v-model="appStore.serverForm.protocol"
+              class="mono proto-select"
+              aria-label="信令协议"
+              @change="savePrefs"
             >
-              复用 NAT 主端口
-            </button>
+              <option v-for="proto in SIGNALING_PROTOCOLS" :key="proto" :value="proto">
+                {{ proto }}://
+              </option>
+            </select>
+            <input
+              v-model="appStore.serverForm.host"
+              type="text"
+              class="mono host-input"
+              placeholder="域名或 IP"
+              @paste="onHostPaste"
+              @change="savePrefs"
+            />
+            <input
+              v-model.number="appStore.serverForm.ws_port"
+              type="number"
+              min="1"
+              max="65535"
+              class="mono port-input"
+              aria-label="信令端口"
+              @change="savePrefs"
+            />
           </div>
+          <span v-if="serverValidationError" class="field-err">
+            {{ serverValidationError }}
+          </span>
+        </div>
+
+        <div class="grid-2">
+          <label class="field">
+            <span>UDP 探测主端口</span>
+            <input
+              v-model.number="appStore.serverForm.probe_p1_port"
+              type="number"
+              min="1"
+              max="65535"
+              class="mono"
+              @change="savePrefs"
+            />
+          </label>
+          <label class="field">
+            <span>UDP 探测副端口</span>
+            <input
+              v-model.number="appStore.serverForm.probe_p2_port"
+              type="number"
+              min="1"
+              max="65535"
+              class="mono"
+              @change="savePrefs"
+            />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>访问口令</span>
           <input
-            v-model="appStore.p2pForm.echo_udp_v4"
-            type="text"
-            class="mono"
-            placeholder="host:34780 (可选)"
+            v-model="appStore.serverForm.token"
+            type="password"
+            placeholder="可选"
             @change="savePrefs"
           />
         </label>
 
-        <label class="field">
-          <span>S2 IPv6 回显 (`echo_udp_v6`)</span>
+        <details class="helper-details">
+          <summary>第二 IP 辅节点 (helper_v4_p1)</summary>
           <input
-            v-model="appStore.p2pForm.echo_udp_v6"
+            v-model="appStore.serverForm.helper_v4_p1"
             type="text"
             class="mono"
-            placeholder="[::]:34780 (可选)"
+            placeholder="helper_ip:34778 (可选)"
             @change="savePrefs"
           />
+        </details>
+      </section>
+
+      <section class="adv-section">
+        <div class="sec-title">打洞与探测参数</div>
+
+        <label class="field">
+          <span>打洞策略</span>
+          <select v-model="appStore.p2pForm.strategy" @change="savePrefs">
+            <option v-for="s in PUNCH_STRATEGIES" :key="s" :value="s">
+              {{ formatPunchStrategy(s) }}
+            </option>
+          </select>
         </label>
 
         <label class="field">
-          <span>公共 STUN 列表 (逗号分隔)</span>
+          <span>P2P 公共 STUN 列表 (逗号分隔)</span>
           <textarea
             v-model="appStore.p2pForm.stun_text"
+            rows="2"
+            class="mono"
+            @change="savePrefs"
+          />
+        </label>
+
+        <label class="field">
+          <span>NAT 公共 STUN 列表</span>
+          <textarea
+            v-model="appStore.natForm.stun_text"
             rows="2"
             class="mono"
             @change="savePrefs"
@@ -210,74 +280,8 @@ function reuseNatPrimaryV4(): void {
           />
         </label>
 
-        <div class="kv-readonly">
-          <span>打洞策略</span>
-          <span class="mono">IPv6 优先回退 IPv4</span>
-        </div>
-      </section>
-
-      <section class="adv-section">
-        <div class="sec-title">NAT 体检高级参数</div>
         <label class="field">
-          <span>自建主节点 p1 (`primary_v4_p1`)</span>
-          <input
-            v-model="appStore.natForm.primary_v4_p1"
-            type="text"
-            class="mono"
-            placeholder="host:34780"
-            @change="savePrefs"
-          />
-        </label>
-        <label class="field">
-          <span>自建主节点 p2 (`primary_v4_p2`)</span>
-          <input
-            v-model="appStore.natForm.primary_v4_p2"
-            type="text"
-            class="mono"
-            placeholder="host:34781"
-            @change="savePrefs"
-          />
-        </label>
-        <label class="field">
-          <span>自建 IPv6 (`primary_v6`)</span>
-          <input
-            v-model="appStore.natForm.primary_v6"
-            type="text"
-            class="mono"
-            placeholder="[host]:34780 (可选)"
-            @change="savePrefs"
-          />
-        </label>
-        <label class="field">
-          <span>自建辅节点 (`helper_v4_p1`)</span>
-          <input
-            v-model="appStore.natForm.helper_v4_p1"
-            type="text"
-            class="mono"
-            placeholder="helper_ip:34780 (可选)"
-            @change="savePrefs"
-          />
-        </label>
-        <label class="field">
-          <span>VPS 口令 (`token`)</span>
-          <input
-            v-model="appStore.natForm.token"
-            type="password"
-            placeholder="可选"
-            @change="savePrefs"
-          />
-        </label>
-        <label class="field">
-          <span>NAT 公共 STUN 列表</span>
-          <textarea
-            v-model="appStore.natForm.stun_text"
-            rows="2"
-            class="mono"
-            @change="savePrefs"
-          />
-        </label>
-        <label class="field">
-          <span>单步超时 (`timeout_ms`)</span>
+          <span>NAT 单步超时 (ms)</span>
           <input
             v-model.number="appStore.natForm.timeout_ms"
             type="number"
@@ -379,27 +383,48 @@ function reuseNatPrimaryV4(): void {
   gap: 6px;
 }
 
-.btn-link {
-  border: none;
-  background: transparent;
-  color: var(--accent);
-  padding: 0;
-  font-size: 11px;
+.endpoint-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.proto-select {
+  width: auto;
+  flex-shrink: 0;
+}
+
+.host-input {
+  flex: 1;
+  min-width: 80px;
+}
+
+.port-input {
+  width: 72px;
+  flex-shrink: 0;
+}
+
+.helper-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.helper-details > summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.helper-details > input {
+  margin-top: 6px;
+  width: 100%;
 }
 
 .field-err {
   color: var(--danger);
   font-size: 11px;
-}
-
-.kv-readonly {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: var(--text-secondary);
-  padding: 6px 8px;
-  background: var(--bg-muted);
-  border-radius: 6px;
-  border: 1px solid var(--border);
 }
 </style>

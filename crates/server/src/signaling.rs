@@ -5,6 +5,7 @@ use protocol::{
     StartPunchMsg, WaitingForPeerMsg, DEFAULT_PUNCH_START_DELAY_MS, DEFAULT_PUNCH_TIMEOUT_MS,
     MAX_ROOMS, PUNCH_ROOM_GRACE_MS, ROOM_WAIT_TTL_SECS,
 };
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -23,6 +24,7 @@ use tokio_tungstenite::{accept_async_with_config, WebSocketStream};
 use tokio_util::sync::CancellationToken;
 
 const LOG_MODULE: &str = "s1";
+const DEFAULT_SIGNALING_WS_PORT: u16 = 34780;
 const MAX_WS_MESSAGE_BYTES: usize = 64 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const JOIN_MESSAGE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -32,6 +34,8 @@ const SHUTDOWN_WAIT_MS: u64 = 50;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalingServerConfig {
     pub bind_ws: SocketAddr,
+    pub bind_ws_v6: Option<SocketAddr>,
+    pub bind_ws_v6_best_effort: bool,
     pub access_token: Option<String>,
     pub wait_ttl: Duration,
     pub start_delay_ms: u32,
@@ -41,7 +45,9 @@ pub struct SignalingServerConfig {
 impl Default for SignalingServerConfig {
     fn default() -> Self {
         Self {
-            bind_ws: SocketAddr::from(([0, 0, 0, 0], 34781)),
+            bind_ws: SocketAddr::from(([0, 0, 0, 0], DEFAULT_SIGNALING_WS_PORT)),
+            bind_ws_v6: None,
+            bind_ws_v6_best_effort: false,
             access_token: None,
             wait_ttl: Duration::from_secs(ROOM_WAIT_TTL_SECS),
             start_delay_ms: DEFAULT_PUNCH_START_DELAY_MS,
@@ -53,6 +59,7 @@ impl Default for SignalingServerConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalingServerBound {
     pub ws_addr: SocketAddr,
+    pub ws_v6_addr: Option<SocketAddr>,
 }
 
 struct ServerState {
@@ -129,31 +136,77 @@ enum PeerPhase {
     Paired { session_id: String },
 }
 
+fn bind_tcp_listener(
+    role_label: &str,
+    addr: SocketAddr,
+) -> std::io::Result<(TcpListener, SocketAddr)> {
+    let std_listener: std::net::TcpListener = (|| {
+        let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+        #[cfg(unix)]
+        socket.set_reuse_address(true)?;
+        if addr.is_ipv6() {
+            socket.set_only_v6(true)?;
+        }
+        socket.set_nonblocking(true)?;
+        socket.bind(&SockAddr::from(addr))?;
+        socket.listen(1024)?;
+        Ok::<std::net::TcpListener, std::io::Error>(socket.into())
+    })()
+    .map_err(|err| {
+        log_sink::error(
+            LOG_MODULE,
+            format!("failed to bind {role_label} socket on {addr}: {err}"),
+        );
+        err
+    })?;
+
+    let listener = TcpListener::from_std(std_listener).map_err(|err| {
+        log_sink::error(
+            LOG_MODULE,
+            format!("failed to register {role_label} socket on {addr}: {err}"),
+        );
+        err
+    })?;
+
+    let local = listener.local_addr().map_err(|err| {
+        log_sink::error(
+            LOG_MODULE,
+            format!("failed to read local_addr for {role_label} socket: {err}"),
+        );
+        err
+    })?;
+
+    log_sink::info(LOG_MODULE, format!("bound {role_label} socket on {local}"));
+    Ok((listener, local))
+}
+
 pub async fn start_signaling_server(
     config: SignalingServerConfig,
     cancel: CancellationToken,
 ) -> std::io::Result<(SignalingServerBound, JoinHandle<()>)> {
-    let listener = TcpListener::bind(config.bind_ws).await.map_err(|err| {
-        log_sink::error(
-            LOG_MODULE,
-            format!("failed to bind ws socket on {}: {err}", config.bind_ws),
-        );
-        err
-    })?;
+    let (listener_v4, ws_addr) = bind_tcp_listener("ws", config.bind_ws)?;
 
-    let ws_addr = listener.local_addr().map_err(|err| {
-        log_sink::error(
-            LOG_MODULE,
-            format!("failed to read local_addr for ws socket: {err}"),
-        );
-        err
-    })?;
+    let (listener_v6, ws_v6_addr) = match config.bind_ws_v6 {
+        Some(v6_addr) => match bind_tcp_listener("ws-v6", v6_addr) {
+            Ok((listener, local)) => (Some(listener), Some(local)),
+            Err(err) if config.bind_ws_v6_best_effort => {
+                log_sink::warn(
+                    LOG_MODULE,
+                    format!(
+                        "optional IPv6 ws socket {v6_addr} unavailable ({err}); continuing IPv4-only"
+                    ),
+                );
+                (None, None)
+            }
+            Err(err) => return Err(err),
+        },
+        None => (None, None),
+    };
 
-    log_sink::info(LOG_MODULE, format!("bound ws socket on {ws_addr}"));
     log_sink::info(
         LOG_MODULE,
         format!(
-            "signaling server started ws={ws_addr} token_configured={} wait_ttl_ms={} start_delay_ms={} punch_duration_ms={}",
+            "signaling server started ws={ws_addr} ws_v6={ws_v6_addr:?} token_configured={} wait_ttl_ms={} start_delay_ms={} punch_duration_ms={}",
             config.access_token.is_some(),
             config.wait_ttl.as_millis(),
             config.start_delay_ms,
@@ -167,8 +220,11 @@ pub async fn start_signaling_server(
         next_id: AtomicU64::new(1),
     });
 
-    let bound = SignalingServerBound { ws_addr };
-    let handle = tokio::spawn(run_accept_loop(listener, state, cancel));
+    let bound = SignalingServerBound {
+        ws_addr,
+        ws_v6_addr,
+    };
+    let handle = tokio::spawn(run_accept_loop(listener_v4, listener_v6, state, cancel));
     Ok((bound, handle))
 }
 
@@ -186,8 +242,35 @@ pub async fn run_signaling_server(
     })
 }
 
+async fn handle_accept_result(
+    accept_res: std::io::Result<(TcpStream, SocketAddr)>,
+    join_set: &mut JoinSet<()>,
+    state: &Arc<ServerState>,
+    cancel: &CancellationToken,
+) -> bool {
+    match accept_res {
+        Ok((stream, peer_addr)) => {
+            let st = Arc::clone(state);
+            let tok = cancel.clone();
+            join_set.spawn(async move {
+                handle_connection(stream, peer_addr, st, tok).await;
+            });
+            true
+        }
+        Err(err) => {
+            log_sink::warn(LOG_MODULE, format!("ws accept error: {err}"));
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => false,
+                _ = tokio::time::sleep(Duration::from_millis(10)) => true,
+            }
+        }
+    }
+}
+
 async fn run_accept_loop(
-    listener: TcpListener,
+    listener_v4: TcpListener,
+    listener_v6: Option<TcpListener>,
     state: Arc<ServerState>,
     cancel: CancellationToken,
 ) {
@@ -206,23 +289,19 @@ async fn run_accept_loop(
                     }
                 }
             }
-            accept_res = listener.accept() => {
-                match accept_res {
-                    Ok((stream, peer_addr)) => {
-                        let st = Arc::clone(&state);
-                        let tok = cancel.clone();
-                        join_set.spawn(async move {
-                            handle_connection(stream, peer_addr, st, tok).await;
-                        });
-                    }
-                    Err(err) => {
-                        log_sink::warn(LOG_MODULE, format!("ws accept error: {err}"));
-                        tokio::select! {
-                            biased;
-                            _ = cancel.cancelled() => break,
-                            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
-                        }
-                    }
+            accept_res = listener_v4.accept() => {
+                if !handle_accept_result(accept_res, &mut join_set, &state, &cancel).await {
+                    break;
+                }
+            }
+            accept_res = async {
+                match listener_v6.as_ref() {
+                    Some(l) => l.accept().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if !handle_accept_result(accept_res, &mut join_set, &state, &cancel).await {
+                    break;
                 }
             }
         }
@@ -1118,6 +1197,8 @@ mod tests {
     fn test_config() -> SignalingServerConfig {
         SignalingServerConfig {
             bind_ws: "127.0.0.1:0".parse().unwrap(),
+            bind_ws_v6: None,
+            bind_ws_v6_best_effort: false,
             access_token: None,
             wait_ttl: Duration::from_secs(10),
             start_delay_ms: 250,
@@ -1466,5 +1547,71 @@ mod tests {
 
         cancel.cancel();
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ws_v4_and_v6_can_bind_same_port() {
+        let Ok(probe) = TcpListener::bind("[::]:0").await else {
+            return;
+        };
+        drop(probe);
+
+        let mut last_err = None;
+        for _ in 0..5 {
+            let v4_probe = TcpListener::bind("0.0.0.0:0").await.unwrap();
+            let port = v4_probe.local_addr().unwrap().port();
+            drop(v4_probe);
+
+            let cancel = CancellationToken::new();
+            let mut cfg = test_config();
+            cfg.bind_ws = SocketAddr::from(([0, 0, 0, 0], port));
+            cfg.bind_ws_v6 = Some(format!("[::]:{port}").parse().unwrap());
+
+            match start_signaling_server(cfg, cancel.clone()).await {
+                Ok((bound, handle)) => {
+                    assert_eq!(bound.ws_addr.port(), port);
+                    assert_eq!(bound.ws_v6_addr.unwrap().port(), port);
+
+                    let mut peer_v4 =
+                        TestWsClient::connect(SocketAddr::from(([127, 0, 0, 1], port))).await;
+                    peer_v4
+                        .send_signal(&sample_join("DualV6", "v4-peer", None))
+                        .await;
+                    assert!(matches!(
+                        peer_v4.recv_signal(500).await.unwrap(),
+                        ServerSignalMsg::WaitingForPeer(_)
+                    ));
+
+                    let mut peer_v6 =
+                        TestWsClient::connect(format!("[::1]:{port}").parse().unwrap()).await;
+                    peer_v6
+                        .send_signal(&sample_join("DualV6", "v6-peer", None))
+                        .await;
+
+                    let s1 = match peer_v4.recv_signal(500).await.unwrap() {
+                        ServerSignalMsg::StartPunch(msg) => msg,
+                        other => panic!("expected StartPunch for v4 peer, got {other:?}"),
+                    };
+                    let s2 = match peer_v6.recv_signal(500).await.unwrap() {
+                        ServerSignalMsg::StartPunch(msg) => msg,
+                        other => panic!("expected StartPunch for v6 peer, got {other:?}"),
+                    };
+                    assert_eq!(s1.session_id, s2.session_id);
+                    assert_eq!(s1.peer_label, "v6-peer");
+                    assert_eq!(s2.peer_label, "v4-peer");
+
+                    cancel.cancel();
+                    handle.await.unwrap();
+                    return;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                }
+            }
+        }
+        panic!(
+            "failed to bind ws 0.0.0.0 and [::] on the same ephemeral port: {:?}",
+            last_err
+        );
     }
 }

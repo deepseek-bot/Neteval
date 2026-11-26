@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.0] - 2026-11-26
+
+### Added
+- **Server CLI (`crates/server/src/main.rs`)**: Added `neteval-server start [ws:<port>]` subcommand with dual-stack defaults (`34778/udp` primary probe/echo, `34779/udp` secondary probe, `34780/tcp` WS signaling), `--probe`, `--no-probe`, `--no-ipv6`, and full `--help` examples while keeping legacy flags backward-compatible.
+- **Punch Strategy (`crates/protocol`, `client-core`, `cli`, `apps/gui`)**: Extended `PunchStrategy` with `Ipv4Only` and `Ipv6Only` (`StandardUdpV6First` default), enforced strict stack filtering during candidate gathering and punching (`prepare_session_with_strategy` + `execute_probe`), added `neteval-cli p2p --strategy`, and exposed a strategy selector in GUI Advanced Settings.
+- **Android APK Release Signing (`.github/workflows/release.yml`, `gui-ci.yml`)**: Added `zipalign` + `apksigner sign` + `apksigner verify` steps to ship signed arm64 APKs.
+
+### Changed
+- **Unified GUI Server Configuration (`apps/gui`)**: Consolidated NAT and P2P endpoint forms into a single `serverForm` (`ws://` protocol dropdown, paste-aware host/domain field, configurable `34780`/`34778`/`34779` ports, collapsed optional helper node) with automatic dual-stack endpoint assembly and legacy `localStorage` migration.
+- **Default Ports & Docs (`README.md`)**: Updated default server ports (`34778/udp`, `34779/udp`, `34780/tcp`) and bilingual documentation.
+
+### Fixed
+- **Server Dual-Stack Binding (`crates/server/src/nat_echo.rs`, `signaling.rs`)**: Explicitly set `IPV6_V6ONLY = true` via `socket2` for both UDP and TCP IPv6 listeners so Linux hosts with `net.ipv6.bindv6only = 0` can bind IPv4 and IPv6 on the same port without `Address in use (os error 98)`.
+
 ## [1.2.1] - 2026-11-25
 
 ### Fixed

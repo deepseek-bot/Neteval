@@ -448,12 +448,13 @@ async fn execute_p2p_lifecycle(
     cancel_reason: &Arc<Mutex<Option<String>>>,
 ) -> AssessmentState {
     // Stage 1: preparing_candidates
-    let (session_handle, local_candidates) = match p2p_engine::prepare_session(
+    let (session_handle, local_candidates) = match p2p_engine::prepare_session_with_strategy(
         input.echo_udp_v4.as_deref(),
         input.echo_udp_v6.as_deref(),
         &input.public_stun_servers,
         input.token.as_deref(),
         input.candidate_timeout_ms,
+        input.strategy,
         cancel.clone(),
     )
     .await

@@ -3,11 +3,13 @@ import { computed, ref } from 'vue';
 import {
   appStore,
   applyPreset,
+  applyServerPaste,
   isRunning,
   runP2pTest,
   savePrefs,
   stopCurrentTask,
 } from '../stores/appState';
+import { SIGNALING_PROTOCOLS } from '../types/protocol';
 import {
   formatLossPct,
   formatMs,
@@ -15,7 +17,7 @@ import {
   formatVerdict,
   generateRoomCode,
   validateRoomCode,
-  validateWsUrl,
+  validateServerConfig,
 } from '../utils/format';
 import LatencyChart from './LatencyChart.vue';
 
@@ -63,10 +65,20 @@ const liveSummary = computed(() => {
 });
 
 const wsValidationError = computed(() => {
-  const raw = appStore.p2pForm.signaling_ws_url;
-  if (!raw.trim()) return null;
-  return validateWsUrl(raw);
+  if (!appStore.serverForm.host.trim()) return null;
+  return validateServerConfig(
+    appStore.serverForm.protocol,
+    appStore.serverForm.host,
+    Number(appStore.serverForm.ws_port),
+  );
 });
+
+function onHostPaste(e: ClipboardEvent): void {
+  const text = e.clipboardData?.getData('text') ?? '';
+  if (text && applyServerPaste(text)) {
+    e.preventDefault();
+  }
+}
 
 const roomValidationError = computed(() => {
   const code = appStore.p2pForm.room_code.trim();
@@ -155,14 +167,39 @@ function onToggleAction(): void {
             {{ p.name }}
           </option>
         </select>
-        <input
-          v-model="appStore.p2pForm.signaling_ws_url"
-          type="text"
-          class="mono ws-input"
-          :disabled="runningThis"
-          placeholder="信令地址 ws://host:34781"
-          @change="savePrefs"
-        />
+        <div class="server-endpoint">
+          <select
+            v-model="appStore.serverForm.protocol"
+            class="mono proto-select"
+            :disabled="runningThis"
+            aria-label="信令协议"
+            @change="savePrefs"
+          >
+            <option v-for="proto in SIGNALING_PROTOCOLS" :key="proto" :value="proto">
+              {{ proto }}://
+            </option>
+          </select>
+          <input
+            v-model="appStore.serverForm.host"
+            type="text"
+            class="mono host-input"
+            :disabled="runningThis"
+            placeholder="域名或 IP"
+            @paste="onHostPaste"
+            @change="savePrefs"
+          />
+          <span class="port-sep mono">:</span>
+          <input
+            v-model.number="appStore.serverForm.ws_port"
+            type="number"
+            min="1"
+            max="65535"
+            class="mono port-input"
+            :disabled="runningThis"
+            aria-label="信令端口"
+            @change="savePrefs"
+          />
+        </div>
       </div>
 
       <div class="ctrl-group ctrl-room">
@@ -194,7 +231,7 @@ function onToggleAction(): void {
         />
         <div class="token-wrap">
           <input
-            v-model="appStore.p2pForm.token"
+            v-model="appStore.serverForm.token"
             :type="showToken ? 'text' : 'password'"
             class="token-input"
             :disabled="runningThis"
@@ -353,16 +390,41 @@ function onToggleAction(): void {
 }
 
 .ctrl-ws {
-  flex: 1.5 1 240px;
+  flex: 1.8 1 280px;
+  flex-wrap: wrap;
   min-width: 0;
 }
 
 .preset-select {
-  max-width: 120px;
+  max-width: 112px;
 }
 
-.ws-input {
+.server-endpoint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.proto-select {
+  width: auto;
+  flex-shrink: 0;
+}
+
+.host-input {
   flex: 1;
+  min-width: 90px;
+}
+
+.port-sep {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.port-input {
+  width: 72px;
+  flex-shrink: 0;
 }
 
 .ctrl-room {

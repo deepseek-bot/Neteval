@@ -12,7 +12,25 @@ export type ProbeError =
 
 export type IpFamily = 'ipv4' | 'ipv6';
 
-export type PunchStrategy = 'standard_udp_v6_first';
+export type PunchStrategy = 'standard_udp_v6_first' | 'ipv4_only' | 'ipv6_only';
+
+export type SignalingProtocol = 'ws';
+
+export const SIGNALING_PROTOCOLS: SignalingProtocol[] = ['ws'];
+
+export const DEFAULT_SIGNALING_PORT = 34780;
+export const DEFAULT_PROBE_PORT_P1 = 34778;
+export const DEFAULT_PROBE_PORT_P2 = 34779;
+
+export interface ServerConfig {
+  protocol: SignalingProtocol;
+  host: string;
+  ws_port: number;
+  probe_p1_port: number;
+  probe_p2_port: number;
+  token: string;
+  helper_v4_p1: string;
+}
 
 export type P2pVerdict = 'excellent' | 'good' | 'unstable' | 'failed';
 
@@ -139,14 +157,13 @@ export type AssessmentState =
 export interface NodePreset {
   id: string;
   name: string;
-  signaling_ws_url: string;
-  echo_udp_v4: string;
-  echo_udp_v6: string;
-  primary_v4_p1: string;
-  primary_v4_p2: string;
-  primary_v6: string;
-  helper_v4_p1: string;
+  protocol: SignalingProtocol;
+  host: string;
+  ws_port: number;
+  probe_p1_port: number;
+  probe_p2_port: number;
   token: string;
+  helper_v4_p1: string;
 }
 
 export const DEFAULT_STUN_SERVERS: string[] = [

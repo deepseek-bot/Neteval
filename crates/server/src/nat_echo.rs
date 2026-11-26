@@ -3,6 +3,7 @@ use protocol::{
     AddrEchoReq, AddrEchoResp, ChangeIpHint, EchoMode, S2WireMessage, MAX_S2_ALT_REPLY_BYTES,
     MAX_UDP_PACKET_BYTES,
 };
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +20,7 @@ pub struct EchoServerConfig {
     pub bind_p1: SocketAddr,
     pub bind_p2: Option<SocketAddr>,
     pub bind_v6: Option<SocketAddr>,
+    pub bind_v6_best_effort: bool,
     pub helper_addr: Option<SocketAddr>,
     pub access_token: Option<String>,
     pub responder_id: Option<String>,
@@ -60,10 +62,29 @@ async fn bind_socket(
     role: SocketRole,
     addr: SocketAddr,
 ) -> std::io::Result<(Arc<UdpSocket>, SocketAddr)> {
-    let sock = UdpSocket::bind(addr).await.map_err(|err| {
+    let std_sock: std::net::UdpSocket = (|| {
+        let socket = Socket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
+        if addr.is_ipv6() {
+            socket.set_only_v6(true)?;
+        }
+        socket.set_nonblocking(true)?;
+        socket.bind(&SockAddr::from(addr))?;
+        Ok::<std::net::UdpSocket, std::io::Error>(socket.into())
+    })()
+    .map_err(|err| {
         log_sink::error(
             LOG_MODULE,
             format!("failed to bind {} socket on {addr}: {err}", role.label()),
+        );
+        err
+    })?;
+    let sock = UdpSocket::from_std(std_sock).map_err(|err| {
+        log_sink::error(
+            LOG_MODULE,
+            format!(
+                "failed to register {} socket on {addr}: {err}",
+                role.label()
+            ),
         );
         err
     })?;
@@ -96,10 +117,17 @@ pub async fn start_echo_server(
     };
 
     let (v6_sock, v6_addr) = match config.bind_v6 {
-        Some(addr) => {
-            let (sock, local) = bind_socket(SocketRole::V6, addr).await?;
-            (Some(sock), Some(local))
-        }
+        Some(addr) => match bind_socket(SocketRole::V6, addr).await {
+            Ok((sock, local)) => (Some(sock), Some(local)),
+            Err(err) if config.bind_v6_best_effort => {
+                log_sink::warn(
+                    LOG_MODULE,
+                    format!("optional IPv6 socket {addr} unavailable ({err}); continuing IPv4-only"),
+                );
+                (None, None)
+            }
+            Err(err) => return Err(err),
+        },
         None => (None, None),
     };
 
@@ -677,6 +705,7 @@ mod tests {
             bind_p1,
             bind_p2: None,
             bind_v6: None,
+            bind_v6_best_effort: false,
             helper_addr: None,
             access_token: None,
             responder_id: None,
@@ -975,5 +1004,41 @@ mod tests {
 
         cancel.cancel();
         handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn v4_and_v6_can_bind_same_port() {
+        let Ok(probe) = UdpSocket::bind("[::]:0").await else {
+            return;
+        };
+        drop(probe);
+
+        let mut last_err = None;
+        for _ in 0..5 {
+            let v4_probe = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+            let port = v4_probe.local_addr().unwrap().port();
+            drop(v4_probe);
+
+            let cancel = CancellationToken::new();
+            let mut cfg = test_config(SocketAddr::from(([0, 0, 0, 0], port)));
+            cfg.bind_v6 = Some(format!("[::]:{port}").parse().unwrap());
+
+            match start_echo_server(cfg, cancel.clone()).await {
+                Ok((bound, handle)) => {
+                    assert_eq!(bound.p1_addr.port(), port);
+                    assert_eq!(bound.v6_addr.unwrap().port(), port);
+                    cancel.cancel();
+                    handle.await.unwrap();
+                    return;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                }
+            }
+        }
+        panic!(
+            "failed to bind 0.0.0.0 and [::] on the same ephemeral port: {:?}",
+            last_err
+        );
     }
 }

@@ -542,6 +542,27 @@ pub async fn prepare_session(
     timeout_ms: u64,
     cancel: CancellationToken,
 ) -> Result<(SessionHandle, Vec<Candidate>), ProbeError> {
+    prepare_session_with_strategy(
+        echo_udp_v4,
+        echo_udp_v6,
+        public_stun_servers,
+        token,
+        timeout_ms,
+        PunchStrategy::StandardUdpV6First,
+        cancel,
+    )
+    .await
+}
+
+pub async fn prepare_session_with_strategy(
+    echo_udp_v4: Option<&str>,
+    echo_udp_v6: Option<&str>,
+    public_stun_servers: &[String],
+    token: Option<&str>,
+    timeout_ms: u64,
+    strategy: PunchStrategy,
+    cancel: CancellationToken,
+) -> Result<(SessionHandle, Vec<Candidate>), ProbeError> {
     if cancel.is_cancelled() {
         return Err(ProbeError::Cancelled);
     }
@@ -549,28 +570,57 @@ pub async fn prepare_session(
     // Pre-validate AddrEchoReq size against MAX_UDP_PACKET_BYTES when token is supplied.
     let _ = encode_s2_echo_req(0, token)?;
 
-    let v4_sock = match UdpSocket::bind("0.0.0.0:0").await {
-        Ok(s) => Some(Arc::new(s)),
-        Err(e) => {
-            logger::warn(
-                MODULE_TAG,
-                format!("failed to bind IPv4 UDP socket 0.0.0.0:0, continuing without IPv4: {e}"),
-            );
-            None
+    let allow_v4 = !matches!(strategy, PunchStrategy::Ipv6Only);
+    let allow_v6 = !matches!(strategy, PunchStrategy::Ipv4Only);
+
+    let v4_sock = if allow_v4 {
+        match UdpSocket::bind("0.0.0.0:0").await {
+            Ok(s) => Some(Arc::new(s)),
+            Err(e) => {
+                logger::warn(
+                    MODULE_TAG,
+                    format!("failed to bind IPv4 UDP socket 0.0.0.0:0, continuing without IPv4: {e}"),
+                );
+                None
+            }
         }
+    } else {
+        None
     };
 
-    let v6_sock = match UdpSocket::bind("[::]:0").await {
-        Ok(s) => Some(Arc::new(s)),
-        Err(e) => {
-            logger::warn(
-                MODULE_TAG,
-                format!("failed to bind IPv6 UDP socket [::]:0, continuing without IPv6: {e}"),
-            );
-            None
+    let v6_sock = if allow_v6 {
+        match UdpSocket::bind("[::]:0").await {
+            Ok(s) => Some(Arc::new(s)),
+            Err(e) => {
+                logger::warn(
+                    MODULE_TAG,
+                    format!("failed to bind IPv6 UDP socket [::]:0, continuing without IPv6: {e}"),
+                );
+                None
+            }
         }
+    } else {
+        None
     };
 
+    if strategy == PunchStrategy::Ipv4Only && v4_sock.is_none() {
+        logger::error(
+            MODULE_TAG,
+            "IPv4-only strategy requested but IPv4 UDP socket failed to bind in prepare_session",
+        );
+        return Err(ProbeError::Internal(
+            "IPv4-only strategy requested but IPv4 UDP socket failed to bind".into(),
+        ));
+    }
+    if strategy == PunchStrategy::Ipv6Only && v6_sock.is_none() {
+        logger::error(
+            MODULE_TAG,
+            "IPv6-only strategy requested but IPv6 UDP socket failed to bind in prepare_session",
+        );
+        return Err(ProbeError::Internal(
+            "IPv6-only strategy requested but IPv6 UDP socket failed to bind".into(),
+        ));
+    }
     if v4_sock.is_none() && v6_sock.is_none() {
         logger::error(
             MODULE_TAG,
@@ -624,8 +674,10 @@ pub async fn prepare_session(
         }
     }
 
+    let filtered_echo_v4 = echo_udp_v4.filter(|_| allow_v4);
+    let filtered_echo_v6 = echo_udp_v6.filter(|_| allow_v6);
     let had_external_targets =
-        echo_udp_v4.is_some() || echo_udp_v6.is_some() || !public_stun_servers.is_empty();
+        filtered_echo_v4.is_some() || filtered_echo_v6.is_some() || !public_stun_servers.is_empty();
 
     if !had_external_targets {
         let final_candidates = finalize_candidates(host_candidates);
@@ -640,10 +692,10 @@ pub async fn prepare_session(
     }
 
     let mut raw_targets: Vec<(ProbeTargetRole, String)> = Vec::new();
-    if let Some(v4) = echo_udp_v4 {
+    if let Some(v4) = filtered_echo_v4 {
         raw_targets.push((ProbeTargetRole::EchoV4, v4.to_string()));
     }
-    if let Some(v6) = echo_udp_v6 {
+    if let Some(v6) = filtered_echo_v6 {
         raw_targets.push((ProbeTargetRole::EchoV6, v6.to_string()));
     }
     for stun in public_stun_servers {
@@ -1612,9 +1664,18 @@ where
     }
 
     let SessionHandle { mut v4_sock, mut v6_sock } = handle;
+    match strategy {
+        PunchStrategy::StandardUdpV6First => {}
+        PunchStrategy::Ipv4Only => {
+            v6_sock = None;
+        }
+        PunchStrategy::Ipv6Only => {
+            v4_sock = None;
+        }
+    }
     if v4_sock.is_none() && v6_sock.is_none() {
         return Err(ProbeError::Internal(
-            "session handle holds no active sockets".to_string(),
+            "session handle holds no active sockets for requested strategy".to_string(),
         ));
     }
 
@@ -1640,18 +1701,49 @@ where
     // Phase B: Punching
     let (v6_targets, v4_targets) =
         partition_peer_candidates(peer_candidates, v4_sock.is_some(), v6_sock.is_some());
+    if v6_targets.is_empty() && v4_targets.is_empty() {
+        drop(v4_sock);
+        drop(v6_sock);
+        logger::warn(
+            MODULE_TAG,
+            format!(
+                "execute_probe Phase B failed fast: no compatible peer candidates for strategy {strategy:?} (session_id={session_id})"
+            ),
+        );
+        return Ok(P2pReport {
+            punched: false,
+            peer_label: None,
+            active_peer_addr: None,
+            ip_family: None,
+            punch_elapsed_ms: None,
+            sent: 0,
+            received: 0,
+            loss_ratio: 1.0,
+            avg_rtt_ms: None,
+            p95_rtt_ms: None,
+            jitter_ms: None,
+            series: Vec::new(),
+            verdict: P2pVerdict::Failed,
+            failure_reason: Some("no_compatible_candidates".to_string()),
+            interrupted_reason: None,
+        });
+    }
+
     let punch_start = Instant::now();
     let punch_deadline = punch_start + Duration::from_millis(u64::from(punch_timeout_ms));
     let burst_interval = Duration::from_millis(PUNCH_BURST_INTERVAL_MS);
 
     let mut v4_unlocked = match strategy {
         PunchStrategy::StandardUdpV6First => v6_targets.is_empty() || v6_sock.is_none(),
+        PunchStrategy::Ipv4Only => true,
+        PunchStrategy::Ipv6Only => false,
     };
-    let mut v4_unlock_at = if v4_unlocked || v4_targets.is_empty() {
-        None
-    } else {
-        Some(punch_start + Duration::from_millis(V4_DELAY_AFTER_V6_MS))
-    };
+    let mut v4_unlock_at =
+        if matches!(strategy, PunchStrategy::Ipv6Only) || v4_unlocked || v4_targets.is_empty() {
+            None
+        } else {
+            Some(punch_start + Duration::from_millis(V4_DELAY_AFTER_V6_MS))
+        };
 
     let mut next_punch_seq: u32 = 1;
     logger::info(
@@ -2775,5 +2867,248 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err, ProbeError::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn prepare_session_respects_ipv4_only_and_ipv6_only_strategy() {
+        let cancel = CancellationToken::new();
+
+        let (handle_v4, cands_v4) = prepare_session_with_strategy(
+            None,
+            Some("[::1]:9"),
+            &[],
+            None,
+            500,
+            PunchStrategy::Ipv4Only,
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+        let (v4_local, v6_local) = handle_v4.local_addrs();
+        assert!(v4_local.is_some());
+        assert!(v6_local.is_none(), "Ipv4Only must not bind IPv6 socket");
+        assert!(cands_v4.iter().all(|c| {
+            matches!(
+                c.kind,
+                CandidateKind::HostLocal | CandidateKind::ServerReflexiveV4
+            )
+        }));
+        abort_session(handle_v4);
+
+        if let Ok(probe_v6) = UdpSocket::bind("[::]:0").await {
+            drop(probe_v6);
+            let (handle_v6, cands_v6) = prepare_session_with_strategy(
+                Some("127.0.0.1:9"),
+                None,
+                &[],
+                None,
+                500,
+                PunchStrategy::Ipv6Only,
+                cancel,
+            )
+            .await
+            .unwrap();
+            let (v4_local, v6_local) = handle_v6.local_addrs();
+            assert!(v4_local.is_none(), "Ipv6Only must not bind IPv4 socket");
+            assert!(v6_local.is_some());
+            assert!(!cands_v6.iter().any(|c| {
+                matches!(
+                    c.kind,
+                    CandidateKind::HostLocal | CandidateKind::ServerReflexiveV4
+                )
+            }));
+            abort_session(handle_v6);
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_probe_ipv4_only_ignores_v6_candidates_and_punches_v4() {
+        let cancel = CancellationToken::new();
+        let stop = CancellationToken::new();
+
+        let peer_v4 = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer_v4_addr = peer_v4.local_addr().unwrap().to_string();
+        let stop_peer = stop.clone();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            loop {
+                tokio::select! {
+                    _ = stop_peer.cancelled() => break,
+                    res = peer_v4.recv_from(&mut buf) => {
+                        let Ok((n, from)) = res else { break };
+                        let Ok(msg) = serde_json::from_slice::<P2pDirectMsg>(&buf[..n]) else {
+                            continue;
+                        };
+                        match msg.kind {
+                            P2pMsgKind::Punch => {
+                                let ack = P2pDirectMsg {
+                                    session_id: msg.session_id,
+                                    kind: P2pMsgKind::PunchAck,
+                                    seq: msg.seq,
+                                    sent_offset_ms: 0,
+                                };
+                                let bytes = serde_json::to_vec(&ack).unwrap();
+                                let _ = peer_v4.send_to(&bytes, from).await;
+                            }
+                            P2pMsgKind::Ping => {
+                                let pong = P2pDirectMsg {
+                                    session_id: msg.session_id,
+                                    kind: P2pMsgKind::Pong,
+                                    seq: msg.seq,
+                                    sent_offset_ms: msg.sent_offset_ms,
+                                };
+                                let bytes = serde_json::to_vec(&pong).unwrap();
+                                let _ = peer_v4.send_to(&bytes, from).await;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+
+        let v6_blackhole_opt = UdpSocket::bind("[::1]:0").await.ok();
+        let v6_addr = v6_blackhole_opt
+            .as_ref()
+            .map(|s| s.local_addr().unwrap().to_string())
+            .unwrap_or_else(|| "[2001:db8::1]:40000".to_string());
+
+        let (handle, _) = prepare_session(None, None, &[], None, 500, cancel.clone())
+            .await
+            .unwrap();
+
+        let rep = execute_probe(
+            handle,
+            "sess-v4-only",
+            &[
+                Candidate {
+                    kind: CandidateKind::ServerReflexiveV6,
+                    addr: v6_addr,
+                },
+                Candidate {
+                    kind: CandidateKind::ServerReflexiveV4,
+                    addr: peer_v4_addr,
+                },
+            ],
+            0,
+            MIN_PUNCH_TIMEOUT_MS,
+            MIN_WINDOW_SECS,
+            MIN_PACKET_RATE_HZ,
+            PunchStrategy::Ipv4Only,
+            |_| {},
+            cancel,
+        )
+        .await
+        .unwrap();
+
+        stop.cancel();
+
+        assert!(rep.punched);
+        assert_eq!(rep.ip_family, Some(IpFamily::Ipv4));
+        assert_eq!(rep.sent, MIN_WINDOW_SECS * MIN_PACKET_RATE_HZ);
+        assert_eq!(rep.received, MIN_WINDOW_SECS * MIN_PACKET_RATE_HZ);
+
+        if let Some(v6_bh) = v6_blackhole_opt {
+            let mut buf = [0u8; 64];
+            assert!(matches!(
+                v6_bh.try_recv_from(&mut buf),
+                Err(ref e) if e.kind() == ErrorKind::WouldBlock
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_probe_ipv6_only_ignores_v4_candidates() {
+        let cancel = CancellationToken::new();
+        let stop = CancellationToken::new();
+
+        let peer_v4 = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer_v4_addr = peer_v4.local_addr().unwrap().to_string();
+        let v4_hits = Arc::new(AtomicUsize::new(0));
+        let v4_hits_cl = v4_hits.clone();
+        let stop_peer = stop.clone();
+
+        tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            loop {
+                tokio::select! {
+                    _ = stop_peer.cancelled() => break,
+                    res = peer_v4.recv_from(&mut buf) => {
+                        let Ok((n, from)) = res else { break };
+                        v4_hits_cl.fetch_add(1, Ordering::SeqCst);
+                        if let Ok(msg) = serde_json::from_slice::<P2pDirectMsg>(&buf[..n]) {
+                            if msg.kind == P2pMsgKind::Punch {
+                                let ack = P2pDirectMsg {
+                                    session_id: msg.session_id,
+                                    kind: P2pMsgKind::PunchAck,
+                                    seq: msg.seq,
+                                    sent_offset_ms: 0,
+                                };
+                                let bytes = serde_json::to_vec(&ack).unwrap();
+                                let _ = peer_v4.send_to(&bytes, from).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        let v4_only_handle = SessionHandle {
+            v4_sock: Some(Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap())),
+            v6_sock: None,
+        };
+        let err = execute_probe(
+            v4_only_handle,
+            "sess-v6-missing-sock",
+            &[Candidate {
+                kind: CandidateKind::ServerReflexiveV4,
+                addr: peer_v4_addr.clone(),
+            }],
+            0,
+            MIN_PUNCH_TIMEOUT_MS,
+            MIN_WINDOW_SECS,
+            MIN_PACKET_RATE_HZ,
+            PunchStrategy::Ipv6Only,
+            |_| {},
+            cancel.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ProbeError::Internal(_)));
+
+        if let Ok(v6_sock) = UdpSocket::bind("[::]:0").await {
+            let dual_handle = SessionHandle {
+                v4_sock: Some(Arc::new(UdpSocket::bind("0.0.0.0:0").await.unwrap())),
+                v6_sock: Some(Arc::new(v6_sock)),
+            };
+            let rep = execute_probe(
+                dual_handle,
+                "sess-v6-only",
+                &[Candidate {
+                    kind: CandidateKind::ServerReflexiveV4,
+                    addr: peer_v4_addr,
+                }],
+                0,
+                MIN_PUNCH_TIMEOUT_MS,
+                MIN_WINDOW_SECS,
+                MIN_PACKET_RATE_HZ,
+                PunchStrategy::Ipv6Only,
+                |_| {},
+                cancel,
+            )
+            .await
+            .unwrap();
+
+            assert!(!rep.punched);
+            assert_eq!(rep.verdict, P2pVerdict::Failed);
+            assert_eq!(
+                rep.failure_reason.as_deref(),
+                Some("no_compatible_candidates")
+            );
+        }
+
+        stop.cancel();
+        assert_eq!(v4_hits.load(Ordering::SeqCst), 0);
     }
 }

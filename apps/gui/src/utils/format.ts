@@ -4,6 +4,8 @@ import type {
   NatStatus,
   P2pVerdict,
   ProbeError,
+  PunchStrategy,
+  SignalingProtocol,
 } from '../types/protocol';
 
 const STAGE_LABELS: Record<string, string> = {
@@ -160,4 +162,171 @@ export function validateWsUrl(raw: string): string | null {
     return '信令地址不能包含空格或 # 片段';
   }
   return null;
+}
+
+const IPV4_REGEX =
+  /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+export function isIpv4Literal(host: string): boolean {
+  return IPV4_REGEX.test(host.trim());
+}
+
+export function isIpv6Literal(host: string): boolean {
+  const trimmed = host.trim();
+  if (!trimmed) return false;
+  const bare =
+    trimmed.startsWith('[') && trimmed.endsWith(']')
+      ? trimmed.slice(1, -1)
+      : trimmed;
+  if (!bare.includes(':') || /[\s/?#@[\]]/.test(bare)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(`http://[${bare}]`);
+    return parsed.hostname.startsWith('[') && parsed.hostname.endsWith(']');
+  } catch {
+    return false;
+  }
+}
+
+export function normalizeHost(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('[') && trimmed.endsWith(']') && isIpv6Literal(trimmed)) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+export function formatHostPort(host: string, port: number): string {
+  const normalized = normalizeHost(host);
+  if (isIpv6Literal(normalized)) {
+    return `[${normalized}]:${port}`;
+  }
+  return `${normalized}:${port}`;
+}
+
+export function buildWsUrl(
+  protocol: SignalingProtocol,
+  host: string,
+  port: number,
+): string {
+  return `${protocol}://${formatHostPort(normalizeHost(host), port)}`;
+}
+
+function parseValidPort(portStr: string): number | null {
+  if (!/^\d+$/.test(portStr)) return null;
+  const n = Number(portStr);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
+}
+
+export function parseServerPaste(
+  raw: string,
+):
+  | { ok: true; protocol?: SignalingProtocol; host: string; ws_port?: number }
+  | { ok: false; error: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { ok: true, host: '' };
+  }
+  if (/^wss:\/\//i.test(trimmed)) {
+    return { ok: false, error: '当前版本仅支持 ws:// 明文信令，暂不支持 wss://' };
+  }
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed) && !/^ws:\/\//i.test(trimmed)) {
+    return { ok: false, error: '信令地址必须以 ws:// 开头' };
+  }
+  if (/^ws:\/\//i.test(trimmed)) {
+    if (/[\s#]/.test(trimmed)) {
+      return { ok: false, error: '信令地址不能包含空格或 # 片段' };
+    }
+    try {
+      const parsed = new URL(trimmed);
+      const host = normalizeHost(parsed.hostname);
+      if (!host) {
+        return { ok: false, error: '信令地址缺少主机名' };
+      }
+      if (parsed.port) {
+        const port = parseValidPort(parsed.port);
+        if (port === null) {
+          return { ok: false, error: '信令端口需为 1~65535 的整数' };
+        }
+        return { ok: true, protocol: 'ws', host, ws_port: port };
+      }
+      return { ok: true, protocol: 'ws', host };
+    } catch {
+      return { ok: false, error: '信令地址格式有误' };
+    }
+  }
+
+  const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(trimmed);
+  if (bracketed) {
+    const host = bracketed[1];
+    if (!isIpv6Literal(host)) {
+      return { ok: false, error: 'IPv6 地址格式有误' };
+    }
+    if (bracketed[2] !== undefined) {
+      const port = parseValidPort(bracketed[2]);
+      if (port === null) {
+        return { ok: false, error: '信令端口需为 1~65535 的整数' };
+      }
+      return { ok: true, host, ws_port: port };
+    }
+    return { ok: true, host };
+  }
+
+  if (isIpv6Literal(trimmed)) {
+    return { ok: true, host: normalizeHost(trimmed) };
+  }
+
+  const hostPort = /^([^:\s/]+):(\d+)$/.exec(trimmed);
+  if (hostPort) {
+    const port = parseValidPort(hostPort[2]);
+    if (port === null) {
+      return { ok: false, error: '信令端口需为 1~65535 的整数' };
+    }
+    return { ok: true, host: hostPort[1], ws_port: port };
+  }
+
+  return { ok: true, host: normalizeHost(trimmed) };
+}
+
+export function validateServerConfig(
+  protocol: SignalingProtocol,
+  host: string,
+  wsPort: number,
+): string | null {
+  const normalized = normalizeHost(host);
+  if (!normalized) {
+    return '请填写服务器域名或 IP';
+  }
+  if (/[\s/?#@]/.test(normalized)) {
+    return '服务器主机名格式有误';
+  }
+  if (!Number.isInteger(wsPort) || wsPort < 1 || wsPort > 65535) {
+    return '信令端口需为 1~65535 的整数';
+  }
+  const wsUrl = buildWsUrl(protocol, normalized, wsPort);
+  const wsErr = validateWsUrl(wsUrl);
+  if (wsErr) {
+    return wsErr;
+  }
+  try {
+    const parsed = new URL(wsUrl);
+    if (!parsed.hostname) {
+      return '服务器主机名格式有误';
+    }
+  } catch {
+    return '服务器主机名或端口格式有误';
+  }
+  return null;
+}
+
+export function formatPunchStrategy(strategy: PunchStrategy): string {
+  switch (strategy) {
+    case 'standard_udp_v6_first':
+      return 'IPv6 优先（默认）';
+    case 'ipv4_only':
+      return '仅 IPv4';
+    case 'ipv6_only':
+      return '仅 IPv6';
+  }
 }
