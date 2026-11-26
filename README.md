@@ -1,64 +1,260 @@
-# NetEval — 跨平台网络与 P2P 联机可行性评估工具
+# NetEval
 
-> 当前版本：**`v1.2.1`**
-
-NetEval Tool 是一个面向个人及小圈子的**自建网络质量与 P2P 连通性诊断工具**（BYO 自备服务器，不内置公共服务端），一键摸清本地 NAT 画像、公网节点直连质量，以及两个真实用户之间的 P2P 打洞成功率与延迟稳定性。
-
-- **目标规模**：单实例并发在线 `<= 20` 人、同时 P2P 测试 `<= 5` 对；服务端适配 1C1G Linux VPS，无数据库、零磁盘写入；客户端 `v1.0`～`v1.1` 提供 Windows/Linux CLI，`v1.2` 扩展 Windows EXE 与 Android APK。
+[中文](#中文) | [English](#english)
 
 ---
 
-## 1. 解决什么问题？
+## 中文
 
-在国内跨运营商、晚高峰严厉 QoS 与多层 NAT 环境下，使用 EasyTier 等去中心化组网工具时，往往要等实际组网失败后才能靠翻日志猜原因。  
-本项目借鉴去中心化组网的“轻信令握手 + 端到端探测”思路，**但不做组网内核**，专注把“网络体检”本身做透、做轻、做透明。
+NetEval 是一个轻量级的跨平台 NAT 画像与 P2P 联机可行性诊断工具。它面向个人开发者与小型联机圈子，用于在正式搭建或使用去中心化组网之前，快速测出本机 NAT 类型、IPv6 可达性，以及两台真实设备之间 UDP 打洞后的实际延迟与丢包稳定性。
+
+### 核心特色
+
+- **两种 NAT 体检模式**：
+  - **零服务端公共 STUN 模式**：无需自备 VPS，利用 RFC 5389 公共 STUN 节点开箱区分锥形 NAT（NAT1–3）与对称型 NAT（NAT4），并检测公网 IPv6 可达性。
+  - **自建 S2 增强模式**：仅需一台单 IP 双 UDP 端口 VPS，结合同 IP 换端口回包（`reply_from_alt_port`）即可区分 NAT1/2、端口受限 NAT3 与对称型 NAT4；可选配置辅助节点（`--helper`）进一步区分全锥形 NAT1 与地址受限 NAT2。
+- **双端真实 P2P 打洞与延迟曲线**：
+  - 两端通过轻量级 WebSocket 信令房间配对交换候选地址，使用独立隔离的 IPv4 / IPv6 UDP Socket 进行同步打洞（IPv6 优先，回退 IPv4，等待配对期间每 15 秒发送 UDP 保活防止 NAT 映射老化）。
+  - 打洞成功后在固定采样窗口内互发小包，实时绘制 RTT、P95、抖动与丢包曲线，并给出联机结论（`excellent` / `good` / `unstable` / `failed`）。
+- **无状态极简服务端**：单文件二进制运行，零数据库、零磁盘落盘、仅内存维护临时配对房间，适配 1C1G 低配 Linux VPS；客户端支持在本地保存历史检测报告与节点预设。
+- **多端覆盖**：提供 Windows 桌面 GUI、Android APK 以及 Windows / Linux 命令行客户端。
+
+### 明确边界
+
+- 不提供 TUN/TAP 虚拟网卡、流量转发、中继代理或 VPN/组网内核。
+- 不做 P2P 业务数据传输或带宽测速。
+- 不内置官方公共信令或中继服务器（公共 STUN 仅作地址反射探测，P2P 配对与 S2 增强探测需使用自建服务端）。
+
+### 下载安装
+
+前往 [GitHub Releases](https://github.com/deepseek-bot/Neteval/releases) 下载对应平台产物：
+
+| 文件名 | 平台 | 说明 |
+| --- | --- | --- |
+| `neteval-gui-windows-x86_64.exe` | Windows x86_64 | 桌面端图形界面（需系统已安装 WebView2 Runtime） |
+| `neteval-gui-android-arm64.apk` | Android arm64 | 移动端图形界面 APK |
+| `neteval-cli-windows-x86_64.exe` | Windows x86_64 | 命令行客户端 |
+| `neteval-cli-linux-x86_64` | Linux x86_64 (musl) | 静态链接命令行客户端 |
+| `neteval-server-linux-x86_64` | Linux x86_64 (musl) | 静态链接信令与 S2 回显服务端 |
+| `neteval-server-windows-x86_64.exe` | Windows x86_64 | 服务端 Windows 构建（适合本地调试） |
+
+### 使用方法
+
+#### 1. 图形界面（Windows GUI / Android APK）
+
+- **NAT 体检**：切换至 **NAT 体检** 页签，选择“零 VPS 公共 STUN 模式”或填写自建 S2 服务器地址后点击 **开始体检**。
+- **P2P 打洞**：切换至 **P2P 打洞** 页签，两边填写同一台自建信令服务器的 `ws://host:port` 地址与相同的 **房间码**（4–16 位字母数字，可选填口令与 S2 回显节点），点击 **开始测试** 即可查看实时打洞阶段与延迟折线图，结束后自动弹出报告详情。
+- **节点预设与历史**：桌面端可通过左侧 **对端面板** 保存或一键套用常用服务器预设；所有本地历史记录可在 **历史记录** 页签查看或删除。
+
+#### 2. 自建服务端部署（Linux VPS）
+
+在服务器上授予可执行权限并启动 S1 信令 + S2 双端口服务（需在防火墙 / 安全组放行 **UDP `34780`、`34781`** 与 **TCP `34781`**）：
+
+```bash
+chmod +x ./neteval-server-linux-x86_64
+./neteval-server-linux-x86_64 \
+  --p1 0.0.0.0:34780 \
+  --p2 0.0.0.0:34781 \
+  --ws 0.0.0.0:34781 \
+  --token your-secret-token
+```
+
+常用可选参数：
+- `--v6 [::]:34780`：启用 IPv6 S2 回显端口，用于本机 IPv6 NAT/可达性探测。
+- `--helper <HELPER_IP>:34780`：绑定外部辅助 S2 节点，用于启用 `change_ip_hint` 细分 NAT1 与 NAT2。
+- `--ws-start-delay-ms` / `--ws-punch-duration-ms`：调整配对成功后的倒计时起步延迟与打洞窗口时长。
+
+#### 3. 命令行客户端（CLI）
+
+**本机 NAT 体检**：
+
+```bash
+# 纯公共 STUN 零服务端模式
+neteval-cli nat
+
+# 自建 S2 双端口增强模式
+neteval-cli nat \
+  --server-p1 <VPS_IP>:34780 \
+  --server-p2 <VPS_IP>:34781 \
+  --token your-secret-token
+```
+
+**双端 P2P 打洞与延迟评估**（双方在各自设备上使用同一房间码执行）：
+
+```bash
+# 对端 A
+neteval-cli p2p \
+  --ws ws://<VPS_IP>:34781 \
+  --room testroom01 \
+  --label alice \
+  --token your-secret-token \
+  --echo-v4 <VPS_IP>:34780
+
+# 对端 B
+neteval-cli p2p \
+  --ws ws://<VPS_IP>:34781 \
+  --room testroom01 \
+  --label bob \
+  --token your-secret-token \
+  --echo-v4 <VPS_IP>:34780
+```
+
+**历史记录与 JSON 输出**：
+
+```bash
+neteval-cli --json nat
+neteval-cli history list
+neteval-cli history show <REPORT_ID>
+neteval-cli history delete <REPORT_ID>
+```
+
+### 从源码构建
+
+前置依赖：Rust 工具链（`stable`）、Node.js（构建 GUI 前端时使用）。
+
+```bash
+# 克隆仓库
+git clone https://github.com/deepseek-bot/Neteval.git
+cd Neteval
+
+# 编译服务端与 CLI
+cargo build --release --bin neteval-server --bin neteval-cli
+
+# 编译桌面 GUI（需先构建前端产物并开启 custom-protocol）
+cd apps/gui
+npm ci
+npm run build
+cd ../..
+cargo build --release -p neteval-gui --features custom-protocol
+
+# 运行工作区全量测试
+cargo test --workspace
+```
 
 ---
 
-## 2. 核心能力（做什么）
+## English
 
-1. **本机 NAT 精细画像（零 VPS 公共 STUN + 单台自建 VPS 深度区分）**
-   * 支持**纯公共 STUN 零服务端模式**：对比多个公共 STUN 节点反射地址，零成本开箱区分锥形 NAT1～3 与对称型 NAT4，并检测 IPv6 连通性。
-   * 支持**单台自建 VPS 双端口增强模式**：通过单 IP 双 UDP 端口与 `reply_from_alt_port` 同 IP 换端口回包，结合公共 STUN 节点第二 IP，无需第二台 VPS 即可细分 NAT1/2 vs NAT3 vs NAT4 过滤与映射行为（可选支持第二 IP/辅节点细分 NAT1 vs NAT2）。
-   * 区分“探测节点跨境不可达”与“本地 NAT 限制”，减少误判。
-2. **双端真实 P2P 握手与延迟曲线评估**（`v1.1.0`）
-   * 两个用户通过自建无状态信令节点配对、交换候选地址（含本机公网 IPv6 直连地址），使用双栈独立隔离的本地 UDP Socket 句柄进行多轮同步打洞（默认 IPv6 优先，回退 IPv4，配对等待期保活防 NAT 映射老化）。
-   * 握手成功后在固定时间窗口内互发极小探测包（全程仅几十 KB），生成 **RTT、抖动、丢包率曲线** 与直观的联机适配结论。
-3. **公网/自有节点直连链路探测**（`v1.3.0`）
-   * 针对指定 IP（如 Cloudflare 边缘节点、自有 VPS、各区数据中心 IP、Steam 类服务节点）做 TCP 与可选 TLS+SNI 直连探测。
-   * 绕过本地 DNS 污染，免管理员权限（不依赖 ICMP Ping），输出可达性、丢包率与握手延迟。
+NetEval is a lightweight, cross-platform diagnostic tool for NAT profiling and peer-to-peer (P2P) connectivity testing. Built for individual developers and small groups, it measures local NAT behavior, IPv6 reachability, and real end-to-end UDP hole-punching latency and packet loss between two peers before you deploy a mesh or P2P application.
 
----
+### Features
 
-## 3. 明确边界（不做什么 / Non-Goals）
+- **Flexible NAT Profiling**:
+  - **Zero-VPS Public STUN Mode**: Uses RFC 5389 public STUN servers out of the box to distinguish Cone NAT (NAT1–3) from Symmetric NAT (NAT4) and check IPv6 reachability.
+  - **Self-Hosted S2 Enhanced Mode**: Uses a single dual-UDP-port VPS (`reply_from_alt_port`) to differentiate NAT1/2, Port-Restricted Cone NAT3, and Symmetric NAT4, with optional `--helper` forwarding to separate Full Cone NAT1 from Address-Restricted NAT2.
+- **Dual-Peer P2P Hole Punching & Latency Curves**:
+  - Pairs two peers over a stateless WebSocket signaling room, exchanges local/reflexive/global-IPv6 candidates, and runs simultaneous hole punching on isolated IPv4 and IPv6 sockets (IPv6-first with IPv4 fallback and 15s keepalives while waiting).
+  - Streams small fixed-window probes after punch success to calculate RTT, P95, jitter, packet loss, live chart series, and an overall verdict (`excellent` / `good` / `unstable` / `failed`).
+- **Stateless Minimal Server**: Single static binary with no database and no disk persistence; fits easily on a 1C1G Linux VPS. Clients persist assessment history locally as JSON.
+- **Cross-Platform Clients**: Available as a Windows Desktop GUI, Android arm64 APK, and Windows / Linux CLI.
 
-* **不做**虚拟网卡（TUN/TAP）、流量接管、中继转发或任何联机/组网内核。
-* **不做** P2P 文件/业务数据传输，不做带宽测速或传输空间估算。
-* **不做**翻墙、代理或绕过封锁工具。
-* **不内置**官方托管服务器（去中心化自建思路，由用户填写自有或社区探测节点）。
-* **服务端不留痕**：零数据库、零落盘、仅内存维护极短生命周期的临时配对房间。
+### Non-Goals
 
----
+- Does **not** create TUN/TAP interfaces, route traffic, relay packets, or act as a VPN/mesh client.
+- Does **not** perform P2P file transfers or throughput/bandwidth speed tests.
+- Does **not** ship built-in hosted signaling or relay servers (BYO server for S1 signaling and S2 enhanced NAT checks).
 
-## 4. 适用规模与技术原则
+### Downloads
 
-* **适用规模**：个人练手与小圈子自用（单自建服务端支持 ≤ 20 人同时在线、≤ 5 组并发探测）。
-* **资源目标**：服务端面向 Linux **1C1G 低配 VPS** 设计，空载极低内存占用，固定极少端口（防火墙友好）。
-* **技术栈与结构**：全套 **Rust Cargo Workspace**，轻量 4-Crate 黑盒模块化，模块间严格单向依赖、仅通过 `protocol` 纯数据契约通信：
-  * `crates/protocol`：共享纯数据契约（零逻辑、零网络）
-  * `crates/server`：Linux 单文件无状态服务端（`signaling` + `nat_echo`）
-  * `crates/client-core`：跨平台共享探测核心（`link_prober` / `nat_prober` / `p2p_engine` / `orchestrator`）
-  * `crates/cli`（`v1.0`～`v1.1`）/ `apps/gui`（`v1.2`）：薄壳交互层（Windows EXE & Android APK）
+Prebuilt binaries are available on [GitHub Releases](https://github.com/deepseek-bot/Neteval/releases):
 
----
+| Artifact | Platform | Description |
+| --- | --- | --- |
+| `neteval-gui-windows-x86_64.exe` | Windows x86_64 | Desktop GUI (requires WebView2 Runtime) |
+| `neteval-gui-android-arm64.apk` | Android arm64 | Mobile GUI APK |
+| `neteval-cli-windows-x86_64.exe` | Windows x86_64 | Command-line client |
+| `neteval-cli-linux-x86_64` | Linux x86_64 (musl) | Statically linked CLI client |
+| `neteval-server-linux-x86_64` | Linux x86_64 (musl) | Statically linked S1 signaling & S2 echo server |
+| `neteval-server-windows-x86_64.exe` | Windows x86_64 | Windows server build |
 
-## 5. 版本演进路线
+### Usage
 
-* **`v1.0.0` 本机 NAT 精细画像核心闭环**：客户端 `C4 (NAT Profiler)` + `C1/C6/CLI` + 服务端 `S2`（双 UDP 端口地址回显）；支持“纯公共 STUN 零 VPS 起步模式”（区分 NAT1～3 锥形 vs NAT4 对称型 + IPv6 连通性）与“单台 VPS 增强模式”（精准细分 NAT3 端口受限与过滤行为，可选辅节点细分 NAT1/NAT2）。
-* **`v1.1.0` 双端 P2P 连通性与延迟曲线**：服务端启用 `S1`（1 WS 信令房间配对）+ 客户端启用 `C2/C3`（标准 UDP/IPv6 同时打洞，默认 IPv6 优先、双栈独立 Socket 句柄、配对等待期 15s UDP 保活 + 窗口期小包 RTT/抖动/丢包曲线）。
-* **`v1.2.0` 跨端 GUI 落地**：外套薄壳发布 Windows EXE & Android APK（一次性集成 NAT 体检仪与 P2P 实时折线图、本地历史、Android 切后台/切网中断标记；本地仅调试 Windows 版，Android APK 由 GitHub Actions 云端打包）。
-* **`v1.3.0` 公网/自有节点直连链路探测**：客户端启用 `C5`，TCP + TLS/SNI 直连测 Cloudflare / 自有 VPS / 数据中心 IP（绕过 DNS 污染，免 ICMP 权限）。
-* **`v1.4.0` QUIC 握手与小包探测**：在直连通道上对比 QUIC 与裸 UDP 在晚高峰 QoS 下的握手耗时与丢包表现（纯探测，不传业务数据）。
-* **`v1.5.0` 对称 NAT 端口预测探测**：针对国内双 NAT4 场景扩展生日悖论猜端口打洞策略探测。
-* **`v1.6.0` TCP 同时打洞探测**：针对 UDP 严厉限速场景的 TCP 打洞可行性探测。
-* **`v1.7.0+` 按需检测面微扩**：DNS 污染对比、MTU 黑洞探测、去中心化节点配置清单导入/分享。
+#### 1. Desktop & Mobile GUI
+
+- **NAT Check**: Open the **NAT 体检** tab, choose either zero-VPS public STUN mode or self-hosted S2 mode, and start the check.
+- **P2P Test**: Open the **P2P 打洞** tab on both devices, enter the same signaling WebSocket URL (`ws://host:port`) and the same **room code** (4–16 alphanumeric characters, plus optional token and S2 echo endpoints), then start the test to monitor live hole-punching stages and the RTT/loss chart.
+- **Presets & History**: Save reusable node presets in the peer sidebar (desktop) and inspect or remove saved reports in the **历史记录** tab.
+
+#### 2. Self-Hosted Server (Linux VPS)
+
+Open **UDP `34780`–`34781`** and **TCP `34781`** in your firewall/security group, then start `neteval-server`:
+
+```bash
+chmod +x ./neteval-server-linux-x86_64
+./neteval-server-linux-x86_64 \
+  --p1 0.0.0.0:34780 \
+  --p2 0.0.0.0:34781 \
+  --ws 0.0.0.0:34781 \
+  --token your-secret-token
+```
+
+Optional flags:
+- `--v6 [::]:34780`: Bind an IPv6 S2 echo socket for IPv6 probing.
+- `--helper <HELPER_IP>:34780`: Point to an auxiliary S2 node for `change_ip_hint` NAT1 vs NAT2 detection.
+- `--ws-start-delay-ms` / `--ws-punch-duration-ms`: Tune coordinated punch start delay and punch timeout window.
+
+#### 3. CLI Usage
+
+**Local NAT Profiling**:
+
+```bash
+# Zero-VPS public STUN mode
+neteval-cli nat
+
+# Self-hosted S2 dual-port mode
+neteval-cli nat \
+  --server-p1 <VPS_IP>:34780 \
+  --server-p2 <VPS_IP>:34781 \
+  --token your-secret-token
+```
+
+**Dual-Peer P2P Probe** (run on both peers with the same room code):
+
+```bash
+# Peer A
+neteval-cli p2p \
+  --ws ws://<VPS_IP>:34781 \
+  --room testroom01 \
+  --label alice \
+  --token your-secret-token \
+  --echo-v4 <VPS_IP>:34780
+
+# Peer B
+neteval-cli p2p \
+  --ws ws://<VPS_IP>:34781 \
+  --room testroom01 \
+  --label bob \
+  --token your-secret-token \
+  --echo-v4 <VPS_IP>:34780
+```
+
+**History & JSON Output**:
+
+```bash
+neteval-cli --json nat
+neteval-cli history list
+neteval-cli history show <REPORT_ID>
+neteval-cli history delete <REPORT_ID>
+```
+
+### Build from Source
+
+Prerequisites: Rust (`stable`) toolchain and Node.js (for GUI assets).
+
+```bash
+git clone https://github.com/deepseek-bot/Neteval.git
+cd Neteval
+
+# Build server & CLI
+cargo build --release --bin neteval-server --bin neteval-cli
+
+# Build desktop GUI (build frontend dist first, then enable custom-protocol)
+cd apps/gui
+npm ci
+npm run build
+cd ../..
+cargo build --release -p neteval-gui --features custom-protocol
+
+# Run workspace tests
+cargo test --workspace
+```
