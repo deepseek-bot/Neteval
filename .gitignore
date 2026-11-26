@@ -6,3 +6,4 @@ Cargo.lock
 apps/gui/node_modules/
 apps/gui/dist/
 apps/gui/src-tauri/gen/schemas/
+CONTEXT.md

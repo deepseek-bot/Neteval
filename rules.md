@@ -31,8 +31,8 @@
 ## 2. Agent 执行约束
 
 1. **唯一数据源（Single Source of Truth）**：
-   - 项目版本号统一记录在README.md中。
-   - 若项目存在多处版本号声明（如锁文件、配置常量），更新时必须保持同步，禁止各处版本不一致。
+   - 项目版本号以 `Cargo.toml`（`[workspace.package].version`）为唯一数据源；本地开发上下文、当前版本与演进路线记录在 `CONTEXT.md` 中，`README.md` 仅面向外部展示项目说明，不承载版本说明与路线图。
+   - 若项目存在多处版本号声明（如 `CONTEXT.md`、`apps/gui/package.json`、`package-lock.json`、`tauri.conf.json`），更新时必须保持同步，禁止各处版本不一致。
 
 2. **修改时机（重要）**：
    - **禁止在开发中间步骤自动修改版本号**。
