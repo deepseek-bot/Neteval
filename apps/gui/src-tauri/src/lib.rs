@@ -104,7 +104,7 @@ fn open_external_url(url: String) -> Result<bool, String> {
             .args(["url.dll,FileProtocolHandler", &url])
             .spawn()
             .map_err(|err| format!("failed to launch browser: {err}"))?;
-        return Ok(true);
+        Ok(true)
     }
 
     #[cfg(target_os = "macos")]
@@ -113,7 +113,7 @@ fn open_external_url(url: String) -> Result<bool, String> {
             .arg(&url)
             .spawn()
             .map_err(|err| format!("failed to launch browser: {err}"))?;
-        return Ok(true);
+        Ok(true)
     }
 
     #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
@@ -122,7 +122,7 @@ fn open_external_url(url: String) -> Result<bool, String> {
             .arg(&url)
             .spawn()
             .map_err(|err| format!("failed to launch browser: {err}"))?;
-        return Ok(true);
+        Ok(true)
     }
 
     #[cfg(target_os = "android")]
