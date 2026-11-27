@@ -12,6 +12,7 @@ import {
 import {
   formatNatFiltering,
   formatNatMapping,
+  formatNatNoteEntries,
   formatNatStatus,
   formatStageLabel,
 } from '../utils/format';
@@ -23,6 +24,10 @@ const runningInfo = computed(() =>
 );
 
 const runningThis = computed(() => isRunning());
+
+const formattedNotes = computed(() =>
+  appStore.latestNatReport ? formatNatNoteEntries(appStore.latestNatReport.notes) : [],
+);
 
 function toggleRun(): void {
   if (runningThis.value) {
@@ -46,7 +51,7 @@ function onHostPaste(e: ClipboardEvent): void {
 </script>
 
 <template>
-  <div class="nat-page">
+  <div class="nat-page" :class="{ mobile: appStore.isMobile }">
     <div class="nat-controls">
       <div class="mode-switch">
         <button
@@ -145,8 +150,23 @@ function onHostPaste(e: ClipboardEvent): void {
         </div>
       </div>
 
-      <ul v-if="appStore.latestNatReport.notes.length > 0" class="notes-list">
-        <li v-for="(n, idx) in appStore.latestNatReport.notes" :key="idx">{{ n }}</li>
+      <ul v-if="formattedNotes.length > 0" class="notes-list">
+        <li v-for="(item, idx) in formattedNotes" :key="idx">
+          <template v-if="item.kind === 'mappings'">
+            <div class="mapping-title">{{ item.title }}</div>
+            <div class="mapping-rows">
+              <div
+                v-for="(entry, eIdx) in item.entries"
+                :key="eIdx"
+                class="mapping-row mono"
+              >
+                <span class="mapping-src">{{ entry.source }}</span>
+                <span v-if="entry.mapped" class="mapping-val">{{ entry.mapped }}</span>
+              </div>
+            </div>
+          </template>
+          <span v-else class="note-text">{{ item.text }}</span>
+        </li>
       </ul>
     </div>
 
@@ -246,7 +266,47 @@ function onHostPaste(e: ClipboardEvent): void {
   font-size: 12px;
   display: flex;
   flex-direction: column;
+  gap: 6px;
+}
+
+.note-text {
+  word-break: break-word;
+}
+
+.mapping-title {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mapping-rows {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
+}
+
+.mapping-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 5px 8px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.mapping-src {
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.mapping-val {
+  color: var(--text);
+  font-weight: 600;
+  word-break: break-all;
 }
 
 .nat-empty {
@@ -256,5 +316,55 @@ function onHostPaste(e: ClipboardEvent): void {
   padding: 32px;
   text-align: center;
   color: var(--text-muted);
+}
+
+.nat-page.mobile {
+  padding: 12px;
+  gap: 12px;
+}
+
+.nat-page.mobile .nat-controls {
+  padding: 14px;
+  gap: 12px;
+}
+
+.nat-page.mobile .mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.nat-page.mobile .vps-inputs {
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.nat-page.mobile .nat-actions {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.nat-page.mobile .nat-actions button {
+  width: 100%;
+  min-height: 46px;
+  font-size: 16px;
+}
+
+.nat-page.mobile .kv-card {
+  padding: 10px 12px;
+}
+
+.nat-page.mobile .k {
+  font-size: 13px;
+}
+
+.nat-page.mobile .v {
+  font-size: 15px;
+}
+
+.nat-page.mobile .notes-list,
+.nat-page.mobile .mapping-row {
+  font-size: 13px;
 }
 </style>

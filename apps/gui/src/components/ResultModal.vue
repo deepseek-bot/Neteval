@@ -6,6 +6,7 @@ import {
   formatMs,
   formatNatFiltering,
   formatNatMapping,
+  formatNatNoteEntries,
   formatNatStatus,
   formatTime,
   formatVerdict,
@@ -23,6 +24,10 @@ const emit = defineEmits<{
 
 const verdictInfo = computed(() =>
   props.report?.p2p_report ? formatVerdict(props.report.p2p_report.verdict) : null,
+);
+
+const formattedNatNotes = computed(() =>
+  props.report?.nat_report ? formatNatNoteEntries(props.report.nat_report.notes) : [],
 );
 
 function onKeyDown(e: KeyboardEvent): void {
@@ -151,8 +156,23 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown));
           </div>
         </div>
 
-        <ul v-if="report.nat_report.notes.length > 0" class="nat-notes">
-          <li v-for="(note, idx) in report.nat_report.notes" :key="idx">{{ note }}</li>
+        <ul v-if="formattedNatNotes.length > 0" class="nat-notes">
+          <li v-for="(item, idx) in formattedNatNotes" :key="idx">
+            <template v-if="item.kind === 'mappings'">
+              <div class="mapping-title">{{ item.title }}</div>
+              <div class="mapping-rows">
+                <div
+                  v-for="(entry, eIdx) in item.entries"
+                  :key="eIdx"
+                  class="mapping-row mono"
+                >
+                  <span class="mapping-src">{{ entry.source }}</span>
+                  <span v-if="entry.mapped" class="mapping-val">{{ entry.mapped }}</span>
+                </div>
+              </div>
+            </template>
+            <span v-else class="note-text">{{ item.text }}</span>
+          </li>
         </ul>
       </template>
     </div>
@@ -289,6 +309,67 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown));
   font-size: 12px;
   display: flex;
   flex-direction: column;
+  gap: 6px;
+}
+
+.note-text {
+  word-break: break-word;
+}
+
+.mapping-title {
+  margin-bottom: 4px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.mapping-rows {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
+}
+
+.mapping-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 5px 8px;
+  background: var(--bg-muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+}
+
+.mapping-src {
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.mapping-val {
+  color: var(--text);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.modal-panel.mobile .modal-title {
+  font-size: 16px;
+}
+
+.modal-panel.mobile .metric-label {
+  font-size: 12px;
+}
+
+.modal-panel.mobile .metric-value {
+  font-size: 15px;
+}
+
+.modal-panel.mobile .detail-row {
+  font-size: 13px;
+}
+
+.modal-panel.mobile .nat-notes,
+.modal-panel.mobile .mapping-row {
+  font-size: 13px;
 }
 </style>

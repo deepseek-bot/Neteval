@@ -330,3 +330,38 @@ export function formatPunchStrategy(strategy: PunchStrategy): string {
       return '仅 IPv6';
   }
 }
+
+export interface FormattedNatNote {
+  kind: 'mappings' | 'text';
+  title?: string;
+  entries?: { source: string; mapped: string }[];
+  text?: string;
+}
+
+export function formatNatNoteEntries(notes: string[]): FormattedNatNote[] {
+  return notes.map((note) => {
+    const match = /^Observed IPv4 mappings:\s*(.+)$/i.exec(note.trim());
+    if (!match) {
+      return { kind: 'text', text: note };
+    }
+    const entries = match[1]
+      .split(/,\s*/)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+      .map((item) => {
+        const eqIdx = item.lastIndexOf('=');
+        if (eqIdx === -1) {
+          return { source: item, mapped: '' };
+        }
+        return {
+          source: item.slice(0, eqIdx).trim(),
+          mapped: item.slice(eqIdx + 1).trim(),
+        };
+      });
+    return {
+      kind: 'mappings',
+      title: '观测到的 IPv4 映射',
+      entries,
+    };
+  });
+}

@@ -14,7 +14,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="history-page">
+  <div class="history-page" :class="{ mobile: appStore.isMobile }">
     <div class="history-toolbar">
       <span class="count mono">共 {{ appStore.history.length }} 条记录</span>
       <button type="button" class="btn-sm" @click="refreshHistory">刷新</button>
@@ -151,5 +151,41 @@ onMounted(() => {
 .row-actions {
   display: flex;
   gap: 6px;
+}
+
+.history-page.mobile {
+  padding: 12px;
+  gap: 12px;
+}
+
+.history-page.mobile .count {
+  font-size: 13px;
+}
+
+.history-page.mobile .history-row {
+  padding: 12px 14px;
+  gap: 12px;
+}
+
+.history-page.mobile .row-id {
+  font-size: 14px;
+}
+
+.history-page.mobile .row-time {
+  font-size: 13px;
+}
+
+.history-page.mobile .tag {
+  font-size: 12px;
+  padding: 4px 8px;
+}
+
+.history-page.mobile .row-actions {
+  width: 100%;
+  gap: 8px;
+}
+
+.history-page.mobile .row-actions button {
+  flex: 1;
 }
 </style>

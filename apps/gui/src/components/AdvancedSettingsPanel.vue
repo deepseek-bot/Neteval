@@ -167,12 +167,12 @@ function onHostPaste(e: ClipboardEvent): void {
         </label>
 
         <details class="helper-details">
-          <summary>第二 IP 辅节点 (helper_v4_p1)</summary>
+          <summary>第二 IP 辅节点（可选）</summary>
           <input
             v-model="appStore.serverForm.helper_v4_p1"
             type="text"
             class="mono"
-            placeholder="helper_ip:34778 (可选)"
+            placeholder="辅助节点 IP:34778（可选）"
             @change="savePrefs"
           />
         </details>
@@ -308,8 +308,34 @@ function onHostPaste(e: ClipboardEvent): void {
 }
 
 .adv-panel.drawer {
-  width: min(88vw, 340px);
+  width: min(92vw, 380px);
   box-shadow: -8px 0 24px rgba(15, 23, 42, 0.16);
+}
+
+.adv-panel.drawer .adv-header {
+  padding: 14px;
+}
+
+.adv-panel.drawer .adv-title {
+  font-size: 16px;
+}
+
+.adv-panel.drawer .adv-body {
+  padding: 14px;
+  gap: 16px;
+}
+
+.adv-panel.drawer .sec-title {
+  font-size: 14px;
+}
+
+.adv-panel.drawer .field {
+  font-size: 14px;
+  gap: 6px;
+}
+
+.adv-panel.drawer .port-input {
+  width: 84px;
 }
 
 .adv-header {

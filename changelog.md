@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2] - 2026-11-27
+
+### Changed
+- **Latency Chart Y-Axis Granularity (`apps/gui/src/components/LatencyChart.vue`)**: Replaced the 2-interval (`0`, `max/2`, `max`) Y-axis ticks with a dynamic nice-step tick generator (4 intervals / 5 ticks in compact mobile view, 5 intervals / 6 ticks on desktop, supporting `0.5 ms` steps under `4 ms`), dashed reference grid lines, and wider left padding.
+- **Mobile & Android Touch Sizing (`apps/gui/src/style.css`, `App.vue`, `NatView.vue`, `P2pView.vue`, `HistoryView.vue`, `AdvancedSettingsPanel.vue`, `ResultModal.vue`, `appState.ts`)**: Enlarged Android/mobile typography, bottom navigation tabs, top bar, buttons (`min-height: 44px`), inputs, selects, sliders, and action cards, and locked Android User-Agent devices to mobile layout across orientations via `html.is-mobile`.
+- **NAT Output & Advanced Settings Formatting (`apps/gui/src/utils/format.ts`, `NatView.vue`, `ResultModal.vue`, `AdvancedSettingsPanel.vue`)**: Split `Observed IPv4 mappings:` result notes into clean line-by-line endpoint-to-mapped rows in both `NatView` and `ResultModal`, and replaced the raw `helper_v4_p1` identifier in Advanced Settings with plain UI labels.
+
 ## [1.3.1] - 2026-11-26
 
 ### Fixed
