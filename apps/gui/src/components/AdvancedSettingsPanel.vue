@@ -131,31 +131,6 @@ function onHostPaste(e: ClipboardEvent): void {
           </span>
         </div>
 
-        <div class="grid-2">
-          <label class="field">
-            <span>UDP 探测主端口</span>
-            <input
-              v-model.number="appStore.serverForm.probe_p1_port"
-              type="number"
-              min="1"
-              max="65535"
-              class="mono"
-              @change="savePrefs"
-            />
-          </label>
-          <label class="field">
-            <span>UDP 探测副端口</span>
-            <input
-              v-model.number="appStore.serverForm.probe_p2_port"
-              type="number"
-              min="1"
-              max="65535"
-              class="mono"
-              @change="savePrefs"
-            />
-          </label>
-        </div>
-
         <label class="field">
           <span>访问口令</span>
           <input
@@ -165,17 +140,6 @@ function onHostPaste(e: ClipboardEvent): void {
             @change="savePrefs"
           />
         </label>
-
-        <details class="helper-details">
-          <summary>第二 IP 辅节点（可选）</summary>
-          <input
-            v-model="appStore.serverForm.helper_v4_p1"
-            type="text"
-            class="mono"
-            placeholder="辅助节点 IP:34778（可选）"
-            @change="savePrefs"
-          />
-        </details>
       </section>
 
       <section class="adv-section">
@@ -429,24 +393,6 @@ function onHostPaste(e: ClipboardEvent): void {
 .port-input {
   width: 72px;
   flex-shrink: 0;
-}
-
-.helper-details {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-.helper-details > summary {
-  cursor: pointer;
-  user-select: none;
-}
-
-.helper-details > input {
-  margin-top: 6px;
-  width: 100%;
 }
 
 .field-err {

@@ -34,6 +34,15 @@ export interface ServerConfig {
 
 export type P2pVerdict = 'excellent' | 'good' | 'unstable' | 'failed';
 
+export type P2pLatencyTier = 'ultra_low' | 'low' | 'medium' | 'high';
+
+export type P2pStabilityGrade =
+  | 'rock_solid'
+  | 'good'
+  | 'mild_jitter'
+  | 'severe_jitter'
+  | 'failed';
+
 export type NatStatus =
   | 'complete_full'
   | 'complete_single_vps'
@@ -114,8 +123,14 @@ export interface P2pReport {
   received: number;
   loss_ratio: number;
   avg_rtt_ms: number | null;
+  p50_rtt_ms?: number | null;
   p95_rtt_ms: number | null;
   jitter_ms: number | null;
+  iqr_ms?: number | null;
+  tail_bloat_ms?: number | null;
+  spike_ratio?: number | null;
+  latency_tier?: P2pLatencyTier | null;
+  stability_grade?: P2pStabilityGrade | null;
   series: LatencyPoint[];
   verdict: P2pVerdict;
   failure_reason: string | null;

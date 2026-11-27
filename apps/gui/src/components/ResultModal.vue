@@ -8,8 +8,8 @@ import {
   formatNatMapping,
   formatNatNoteEntries,
   formatNatStatus,
+  formatP2pHeadline,
   formatTime,
-  formatVerdict,
 } from '../utils/format';
 import LatencyChart from './LatencyChart.vue';
 
@@ -23,7 +23,7 @@ const emit = defineEmits<{
 }>();
 
 const verdictInfo = computed(() =>
-  props.report?.p2p_report ? formatVerdict(props.report.p2p_report.verdict) : null,
+  props.report?.p2p_report ? formatP2pHeadline(props.report.p2p_report) : null,
 );
 
 const formattedNatNotes = computed(() =>
@@ -86,12 +86,28 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown));
             <span class="metric-value mono">{{ formatMs(report.p2p_report.avg_rtt_ms) }}</span>
           </div>
           <div class="metric-item">
+            <span class="metric-label">中位 RTT (P50)</span>
+            <span class="metric-value mono">{{ formatMs(report.p2p_report.p50_rtt_ms) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">波动带宽 (IQR)</span>
+            <span class="metric-value mono">{{ formatMs(report.p2p_report.iqr_ms) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">长尾偏移 (P95-P50)</span>
+            <span class="metric-value mono">{{ formatMs(report.p2p_report.tail_bloat_ms) }}</span>
+          </div>
+          <div class="metric-item">
             <span class="metric-label">P95 RTT</span>
             <span class="metric-value mono">{{ formatMs(report.p2p_report.p95_rtt_ms) }}</span>
           </div>
           <div class="metric-item">
-            <span class="metric-label">抖动</span>
+            <span class="metric-label">平均抖动</span>
             <span class="metric-value mono">{{ formatMs(report.p2p_report.jitter_ms) }}</span>
+          </div>
+          <div class="metric-item">
+            <span class="metric-label">尖峰率 (&gt;P50+30ms)</span>
+            <span class="metric-value mono">{{ formatLossPct(report.p2p_report.spike_ratio) }}</span>
           </div>
           <div class="metric-item">
             <span class="metric-label">丢包率 / 收发</span>

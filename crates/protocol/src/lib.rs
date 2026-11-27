@@ -129,6 +129,25 @@ pub enum P2pVerdict {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum P2pLatencyTier {
+    UltraLow,
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum P2pStabilityGrade {
+    RockSolid,
+    Good,
+    MildJitter,
+    SevereJitter,
+    Failed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EchoMode {
@@ -373,9 +392,21 @@ pub struct P2pReport {
     #[serde(default)]
     pub avg_rtt_ms: Option<f32>,
     #[serde(default)]
+    pub p50_rtt_ms: Option<f32>,
+    #[serde(default)]
     pub p95_rtt_ms: Option<f32>,
     #[serde(default)]
     pub jitter_ms: Option<f32>,
+    #[serde(default)]
+    pub iqr_ms: Option<f32>,
+    #[serde(default)]
+    pub tail_bloat_ms: Option<f32>,
+    #[serde(default)]
+    pub spike_ratio: Option<f32>,
+    #[serde(default)]
+    pub latency_tier: Option<P2pLatencyTier>,
+    #[serde(default)]
+    pub stability_grade: Option<P2pStabilityGrade>,
     #[serde(default)]
     pub series: Vec<LatencyPoint>,
     pub verdict: P2pVerdict,

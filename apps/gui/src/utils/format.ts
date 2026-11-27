@@ -2,6 +2,9 @@ import type {
   NatFiltering,
   NatMapping,
   NatStatus,
+  P2pLatencyTier,
+  P2pReport,
+  P2pStabilityGrade,
   P2pVerdict,
   ProbeError,
   PunchStrategy,
@@ -70,6 +73,70 @@ export function formatVerdict(verdict: P2pVerdict): {
     case 'failed':
       return { label: '打洞超时或连接失败', tone: 'failed' };
   }
+}
+
+export function formatStabilityGrade(
+  grade: P2pStabilityGrade | null | undefined,
+  fallbackVerdict?: P2pVerdict,
+): {
+  label: string;
+  tone: 'excellent' | 'good' | 'unstable' | 'failed';
+} {
+  switch (grade) {
+    case 'rock_solid':
+      return { label: '极稳', tone: 'excellent' };
+    case 'good':
+      return { label: '良好', tone: 'good' };
+    case 'mild_jitter':
+      return { label: '轻度抖动', tone: 'good' };
+    case 'severe_jitter':
+      return { label: '剧烈抖动', tone: 'unstable' };
+    case 'failed':
+      return { label: '打洞超时或连接失败', tone: 'failed' };
+    default:
+      return fallbackVerdict
+        ? formatVerdict(fallbackVerdict)
+        : { label: '未知', tone: 'unstable' };
+  }
+}
+
+export function formatLatencyTier(
+  tier: P2pLatencyTier | null | undefined,
+  avgRttMs?: number | null,
+): string | null {
+  switch (tier) {
+    case 'ultra_low':
+      return '极低延迟';
+    case 'low':
+      return '低延迟';
+    case 'medium':
+      return '中等延迟';
+    case 'high':
+      return '跨区高延迟';
+    default:
+      if (avgRttMs === null || avgRttMs === undefined || Number.isNaN(avgRttMs)) {
+        return null;
+      }
+      if (avgRttMs < 30) return '极低延迟';
+      if (avgRttMs < 80) return '低延迟';
+      if (avgRttMs <= 150) return '中等延迟';
+      return '跨区高延迟';
+  }
+}
+
+export function formatP2pHeadline(report: P2pReport): {
+  label: string;
+  tone: 'excellent' | 'good' | 'unstable' | 'failed';
+} {
+  const stability = formatStabilityGrade(report.stability_grade, report.verdict);
+  if (stability.tone === 'failed' || !report.punched) {
+    return stability;
+  }
+  const latency = formatLatencyTier(report.latency_tier, report.avg_rtt_ms);
+  return {
+    label: latency ? `${stability.label} · ${latency}` : stability.label,
+    tone: stability.tone,
+  };
 }
 
 export function formatNatStatus(status: NatStatus): string {
