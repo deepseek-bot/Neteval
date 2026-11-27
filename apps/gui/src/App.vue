@@ -161,8 +161,12 @@ onBeforeUnmount(() => {
 }
 
 .app-shell.mobile .top-bar {
-  padding-top: env(safe-area-inset-top, 0px);
-  height: calc(46px + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) 14px 0;
+  height: calc(56px + env(safe-area-inset-top, 0px));
+}
+
+.app-shell.mobile .app-name {
+  font-size: 17px;
 }
 
 .top-left,
@@ -229,14 +233,16 @@ onBeforeUnmount(() => {
   border: none;
   border-radius: 0;
   background: transparent;
-  padding: 10px 4px;
+  min-height: 56px;
+  padding: 14px 8px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text-secondary);
 }
 
 .bnav-btn.active {
   color: var(--accent);
-  box-shadow: inset 0 2px 0 var(--accent);
+  box-shadow: inset 0 3px 0 var(--accent);
 }
 
 .drawer-backdrop {

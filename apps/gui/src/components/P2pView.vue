@@ -338,8 +338,52 @@ function onToggleAction(): void {
 }
 
 .p2p-workspace.mobile {
-  padding: 10px;
+  padding: 12px;
+  gap: 12px;
+}
+
+.p2p-workspace.mobile .mobile-peer-bar {
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.p2p-workspace.mobile .control-bar {
+  padding: 12px;
+  gap: 10px;
+}
+
+.p2p-workspace.mobile .ctrl-group {
+  flex: 1 1 100%;
   gap: 8px;
+}
+
+.p2p-workspace.mobile .preset-select {
+  max-width: none;
+  width: 100%;
+}
+
+.p2p-workspace.mobile .port-input {
+  width: 84px;
+}
+
+.p2p-workspace.mobile .label-input {
+  width: 112px;
+}
+
+.p2p-workspace.mobile .action-btn {
+  width: 100%;
+  min-height: 46px;
+  font-size: 16px;
+}
+
+.p2p-workspace.mobile .step-item {
+  padding: 7px 4px;
+  font-size: 12px;
+  justify-content: center;
+}
+
+.p2p-workspace.mobile .stage-status {
+  font-size: 13px;
 }
 
 .mobile-peer-bar {
@@ -567,7 +611,7 @@ function onToggleAction(): void {
 }
 
 .p2p-workspace.mobile .chart-area {
-  flex: 0 0 240px;
-  min-height: 220px;
+  flex: 0 0 260px;
+  min-height: 240px;
 }
 </style>

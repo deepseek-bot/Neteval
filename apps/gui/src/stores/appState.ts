@@ -271,11 +271,24 @@ function loadPrefs(): StoredPrefs {
 
 const initialPrefs = loadPrefs();
 
+const isAndroidUa =
+  typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent);
+
+function detectIsMobile(): boolean {
+  return isAndroidUa || (typeof window !== 'undefined' ? window.innerWidth < 860 : false);
+}
+
+function syncMobileRootClass(mobile: boolean): void {
+  if (typeof document !== 'undefined') {
+    document.documentElement.classList.toggle('is-mobile', mobile);
+  }
+}
+
 export const appStore = reactive({
   activeTab: 'p2p' as 'nat' | 'p2p' | 'history',
   leftSidebarOpen: false,
   rightSidebarOpen: false,
-  isMobile: typeof window !== 'undefined' ? window.innerWidth < 860 : false,
+  isMobile: detectIsMobile(),
 
   assessmentState: 'idle' as AssessmentState,
   activeKind: null as 'nat' | 'p2p' | null,
@@ -441,13 +454,15 @@ export async function initStore(): Promise<void> {
   if (initialized) return;
   initialized = true;
 
-  const onResize = () => {
-    appStore.isMobile = window.innerWidth < 860;
+  const updateMobile = () => {
+    const mobile = detectIsMobile();
+    appStore.isMobile = mobile;
+    syncMobileRootClass(mobile);
   };
-  window.addEventListener('resize', onResize);
+  updateMobile();
+  window.addEventListener('resize', updateMobile);
 
-  const isAndroid = /android/i.test(navigator.userAgent);
-  if (isAndroid) {
+  if (isAndroidUa) {
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden' && isRunning()) {
         void cancelCurrent('android_background');

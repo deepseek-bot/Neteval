@@ -168,3 +168,45 @@ textarea:focus {
   padding: 7px 10px;
   font-size: 12px;
 }
+
+html.is-mobile,
+html.is-mobile body,
+html.is-mobile #app {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+html.is-mobile button {
+  min-height: 44px;
+  padding: 10px 16px;
+  font-size: 15px;
+  border-radius: 8px;
+}
+
+html.is-mobile button.btn-sm {
+  min-height: 38px;
+  padding: 8px 14px;
+  font-size: 14px;
+}
+
+html.is-mobile input[type='text'],
+html.is-mobile input[type='password'],
+html.is-mobile input[type='number'],
+html.is-mobile select,
+html.is-mobile textarea {
+  min-height: 44px;
+  padding: 10px 12px;
+  font-size: 15px;
+  border-radius: 8px;
+}
+
+html.is-mobile input[type='range'] {
+  height: 32px;
+}
+
+html.is-mobile .banner-error,
+html.is-mobile .banner-warn,
+html.is-mobile .banner-info {
+  padding: 10px 12px;
+  font-size: 14px;
+}

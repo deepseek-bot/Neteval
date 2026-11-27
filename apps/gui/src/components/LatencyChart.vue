@@ -16,9 +16,10 @@ const boxH = ref(props.compact ? 200 : 220);
 
 const pad = computed(() =>
   props.compact
-    ? { top: 12, right: 10, bottom: 24, left: 36 }
-    : { top: 14, right: 14, bottom: 26, left: 42 },
+    ? { top: 12, right: 10, bottom: 26, left: 40 }
+    : { top: 14, right: 14, bottom: 28, left: 46 },
 );
+const tickCount = computed(() => (props.compact ? 4 : 5));
 const innerW = computed(() => Math.max(120, boxW.value - pad.value.left - pad.value.right));
 const innerH = computed(() => Math.max(80, boxH.value - pad.value.top - pad.value.bottom));
 
@@ -60,12 +61,30 @@ const stats = computed(() => {
     .map((p) => p.rtt_ms)
     .filter((v): v is number => v !== null && !Number.isNaN(v));
   const rawMaxRtt = valid.length > 0 ? Math.max(...valid) : 50;
-  const maxRtt = Math.max(20, Math.ceil((rawMaxRtt * 1.15) / 10) * 10);
+  const targetMax = rawMaxRtt > 0 ? rawMaxRtt * 1.15 : 50;
+  const count = tickCount.value;
+  const rawStep = targetMax / count;
+  const minStep = rawMaxRtt < 4 ? 0.5 : 1;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(Math.max(rawStep, 0.1))));
+  const niceMultipliers = [1, 2, 2.5, 5, 10];
+  let step = minStep;
+  for (const m of niceMultipliers) {
+    const candidate = m * magnitude;
+    if (candidate >= rawStep && candidate >= minStep) {
+      step = candidate;
+      break;
+    }
+  }
+  if (step < rawStep) {
+    step = Math.max(minStep, 10 * magnitude);
+  }
+  step = Number(step.toFixed(2));
+  const maxRtt = Number((step * count).toFixed(2));
   const maxElapsed =
     props.series.length > 0
       ? Math.max(1000, props.series[props.series.length - 1].elapsed_ms)
       : 1000;
-  return { maxRtt, maxElapsed };
+  return { step, maxRtt, maxElapsed };
 });
 
 function xForPoint(pt: LatencyPoint, idx: number): number {
@@ -128,11 +147,17 @@ const lossMarkers = computed(() =>
 );
 
 const yTicks = computed(() => {
-  const max = stats.value.maxRtt;
-  return [0, Math.round(max / 2), max].map((val) => ({
-    val,
-    y: yForRtt(val),
-  }));
+  const count = tickCount.value;
+  const step = stats.value.step;
+  return Array.from({ length: count + 1 }, (_, i) => {
+    const val = Number((step * i).toFixed(2));
+    const label = Number.isInteger(val) ? String(val) : val.toFixed(1).replace(/\.0$/, '');
+    return {
+      val,
+      label,
+      y: yForRtt(val),
+    };
+  });
 });
 
 const xTicks = computed(() => {
@@ -228,8 +253,9 @@ function onPointerLeave(): void {
             :x2="boxW - pad.right"
             :y1="t.y"
             :y2="t.y"
-            stroke="#e5e7eb"
+            :stroke="t.val === 0 ? '#cbd5e1' : '#e5e7eb'"
             stroke-width="1"
+            :stroke-dasharray="t.val === 0 ? undefined : '2 2'"
           />
           <text
             :x="pad.left - 6"
@@ -237,7 +263,7 @@ function onPointerLeave(): void {
             text-anchor="end"
             class="axis-label mono"
           >
-            {{ t.val }}
+            {{ t.label }}
           </text>
         </g>
 
@@ -366,5 +392,13 @@ function onPointerLeave(): void {
 .axis-label {
   font-size: 11px;
   fill: #6b7280;
+}
+
+.chart-wrap.compact .chart-meta {
+  font-size: 13px;
+}
+
+.chart-wrap.compact .axis-label {
+  font-size: 12px;
 }
 </style>
