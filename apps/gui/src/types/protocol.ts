@@ -95,6 +95,7 @@ export interface NatTaskInput {
   helper_v4_p1: string | null;
   token: string | null;
   timeout_ms: number;
+  require_vps?: boolean;
 }
 
 export interface P2pTaskInput {
@@ -160,6 +161,7 @@ export interface RunningState {
   progress_pct: number;
   live_point: LatencyPoint | null;
   live_peer?: LivePeerInfo | null;
+  status_message?: string | null;
 }
 
 export type AssessmentState =

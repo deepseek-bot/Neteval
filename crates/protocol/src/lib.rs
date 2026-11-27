@@ -329,6 +329,8 @@ pub struct NatTaskInput {
     pub token: Option<String>,
     #[serde(default = "default_nat_timeout_ms")]
     pub timeout_ms: u64,
+    #[serde(default)]
+    pub require_vps: bool,
 }
 
 impl Default for NatTaskInput {
@@ -344,6 +346,7 @@ impl Default for NatTaskInput {
             helper_v4_p1: None,
             token: None,
             timeout_ms: default_nat_timeout_ms(),
+            require_vps: false,
         }
     }
 }
@@ -468,6 +471,8 @@ pub enum AssessmentState {
         live_point: Option<LatencyPoint>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         live_peer: Option<LivePeerInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_message: Option<String>,
     },
     Completed(AssessmentReport),
     Cancelled {
@@ -618,6 +623,7 @@ mod tests {
                 progress_pct: 45,
                 live_point: None,
                 live_peer: None,
+                status_message: None,
             }
         );
 
@@ -637,6 +643,7 @@ mod tests {
                 active_peer_addr: Some("[2001:db8::2]:50000".into()),
                 punch_elapsed_ms: Some(85),
             }),
+            status_message: Some("connected".into()),
         };
         let ser = serde_json::to_string(&with_peer).unwrap();
         assert_eq!(serde_json::from_str::<AssessmentState>(&ser).unwrap(), with_peer);

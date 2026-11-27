@@ -4,7 +4,10 @@ import {
   appStore,
   applyPreset,
   applyServerPaste,
+  closeNatVpsModal,
+  continueNatWithoutVps,
   isRunning,
+  retryNatWithVps,
   runNatTest,
   savePrefs,
   stopCurrentTask,
@@ -176,6 +179,31 @@ function onHostPaste(e: ClipboardEvent): void {
           ? '正在执行本机 NAT 体检...'
           : '暂无本机 NAT 体检结果'
       }}
+    </div>
+
+    <div
+      v-if="appStore.natVpsUnreachableModal"
+      class="vps-modal-backdrop"
+      @click.self="closeNatVpsModal"
+    >
+      <div class="vps-modal-card" role="dialog" aria-modal="true">
+        <div class="vps-modal-title">自建服务器不可达</div>
+        <div class="vps-modal-body">
+          <div class="vps-modal-host mono">{{ appStore.natVpsUnreachableModal.host }}</div>
+          <div class="vps-modal-reason">{{ appStore.natVpsUnreachableModal.reason }}</div>
+        </div>
+        <div class="vps-modal-actions">
+          <button type="button" class="btn-primary" @click="retryNatWithVps">
+            重试自建服务器
+          </button>
+          <button type="button" @click="continueNatWithoutVps">
+            无 VPS 继续测试
+          </button>
+          <button type="button" @click="closeNatVpsModal">
+            取消
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -366,5 +394,61 @@ function onHostPaste(e: ClipboardEvent): void {
 .nat-page.mobile .notes-list,
 .nat-page.mobile .mapping-row {
   font-size: 13px;
+}
+
+.vps-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 60;
+}
+
+.vps-modal-card {
+  width: min(440px, 100%);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vps-modal-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--danger);
+}
+
+.vps-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vps-modal-host {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.vps-modal-reason {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.vps-modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 </style>

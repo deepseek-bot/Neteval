@@ -26,6 +26,7 @@ const copiedRoom = ref(false);
 
 const P2P_STAGES = [
   { key: 'preparing_candidates', label: '采集候选' },
+  { key: 'connecting_signaling', label: '连接节点' },
   { key: 'waiting_for_peer', label: '等待对端' },
   { key: 'punching', label: '同步打洞' },
   { key: 'sampling', label: '窗口采样' },
@@ -42,7 +43,11 @@ const runningThis = computed(() => isRunning());
 
 const currentStageIdx = computed(() => {
   if (!runningInfo.value) return -1;
-  return P2P_STAGES.findIndex((s) => s.key === runningInfo.value?.stage);
+  const normalizedStage =
+    runningInfo.value.stage === 'reconnecting_signaling'
+      ? 'connecting_signaling'
+      : runningInfo.value.stage;
+  return P2P_STAGES.findIndex((s) => s.key === normalizedStage);
 });
 
 const mobilePeerExpanded = computed(() => {
@@ -281,7 +286,19 @@ function onToggleAction(): void {
       <div class="stage-status">
         <div class="status-left">
           <template v-if="runningInfo">
-            <span>{{ formatStageLabel(runningInfo.stage) }}</span>
+            <span
+              :class="{
+                'status-reconnecting': runningInfo.stage === 'reconnecting_signaling',
+              }"
+            >
+              {{ runningInfo.status_message || formatStageLabel(runningInfo.stage) }}
+            </span>
+            <span
+              v-if="runningInfo.stage === 'waiting_for_peer'"
+              class="conn-ok-badge"
+            >
+              节点已连接
+            </span>
             <span
               v-if="
                 runningInfo.stage === 'waiting_for_peer' &&
@@ -380,6 +397,10 @@ function onToggleAction(): void {
   padding: 7px 4px;
   font-size: 12px;
   justify-content: center;
+}
+
+.p2p-workspace.mobile .stage-steps {
+  grid-template-columns: repeat(3, 1fr);
 }
 
 .p2p-workspace.mobile .stage-status {
@@ -516,7 +537,7 @@ function onToggleAction(): void {
 
 .stage-steps {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 6px;
 }
 
@@ -592,6 +613,20 @@ function onToggleAction(): void {
   color: var(--accent-hover);
   padding: 2px 8px;
   border-radius: 4px;
+}
+
+.conn-ok-badge {
+  background: var(--ok-soft);
+  color: var(--ok);
+  border: 1px solid #bbf7d0;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+.status-reconnecting {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .verdict-pill {

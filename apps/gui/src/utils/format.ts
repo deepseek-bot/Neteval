@@ -14,7 +14,9 @@ import type {
 const STAGE_LABELS: Record<string, string> = {
   probing_nat: '正在探测公网映射与 NAT 过滤行为',
   preparing_candidates: '正在采集本机网络与公网候选地址',
-  waiting_for_peer: '已进入房间，等待对端加入',
+  connecting_signaling: '正在连接信令节点',
+  reconnecting_signaling: '信令服务器不可达，正在自动重试',
+  waiting_for_peer: '已成功连接节点并进入房间，等待对端加入',
   punching: '双端同步打洞中',
   sampling: '直连通道已建立，正在固定窗口采样',
   saving_report: '正在保存评估报告',
@@ -407,28 +409,41 @@ export interface FormattedNatNote {
 
 export function formatNatNoteEntries(notes: string[]): FormattedNatNote[] {
   return notes.map((note) => {
-    const match = /^Observed IPv4 mappings:\s*(.+)$/i.exec(note.trim());
+    const trimmed = note.trim();
+    const stunMatch = /^Resolved public STUN IPs:\s*(.+)$/i.exec(trimmed);
+    if (stunMatch) {
+      return {
+        kind: 'mappings',
+        title: '公共 STUN 节点解析 IP',
+        entries: parseKvMappingList(stunMatch[1]),
+      };
+    }
+
+    const match = /^Observed IPv4 mappings:\s*(.+)$/i.exec(trimmed);
     if (!match) {
       return { kind: 'text', text: note };
     }
-    const entries = match[1]
-      .split(/,\s*/)
-      .map((item) => item.trim())
-      .filter((item) => item.length > 0)
-      .map((item) => {
-        const eqIdx = item.lastIndexOf('=');
-        if (eqIdx === -1) {
-          return { source: item, mapped: '' };
-        }
-        return {
-          source: item.slice(0, eqIdx).trim(),
-          mapped: item.slice(eqIdx + 1).trim(),
-        };
-      });
     return {
       kind: 'mappings',
       title: '观测到的 IPv4 映射',
-      entries,
+      entries: parseKvMappingList(match[1]),
     };
   });
+}
+
+function parseKvMappingList(raw: string): { source: string; mapped: string }[] {
+  return raw
+    .split(/,\s*/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0)
+    .map((item) => {
+      const eqIdx = item.lastIndexOf('=');
+      if (eqIdx === -1) {
+        return { source: item, mapped: '' };
+      }
+      return {
+        source: item.slice(0, eqIdx).trim(),
+        mapped: item.slice(eqIdx + 1).trim(),
+      };
+    });
 }

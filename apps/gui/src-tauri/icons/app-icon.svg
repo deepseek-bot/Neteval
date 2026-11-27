@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <defs>
+    <linearGradient id="bgGrad" x1="120" y1="80" x2="904" y2="944" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0B1324" />
+      <stop offset="55%" stop-color="#13233F" />
+      <stop offset="100%" stop-color="#0F2E3E" />
+    </linearGradient>
+    <linearGradient id="linkGrad" x1="250" y1="680" x2="774" y2="344" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="50%" stop-color="#22D3EE" />
+      <stop offset="100%" stop-color="#2DD4BF" />
+    </linearGradient>
+    <linearGradient id="ringGrad" x1="200" y1="200" x2="824" y2="824" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.45" />
+      <stop offset="100%" stop-color="#2DD4BF" stop-opacity="0.18" />
+    </linearGradient>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="224" fill="url(#bgGrad)" />
+  <rect x="44" y="44" width="936" height="936" rx="212" stroke="#38BDF8" stroke-opacity="0.22" stroke-width="8" />
+
+  <circle cx="512" cy="512" r="320" stroke="url(#ringGrad)" stroke-width="18" stroke-dasharray="36 28" />
+  <circle cx="512" cy="512" r="210" stroke="#38BDF8" stroke-opacity="0.16" stroke-width="14" />
+
+  <!-- Direct P2P / N-wave path -->
+  <path
+    d="M276 664 L412 372 L612 652 L748 360"
+    stroke="url(#linkGrad)"
+    stroke-width="76"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Left endpoint node -->
+  <circle cx="276" cy="664" r="96" fill="#0B1324" stroke="#38BDF8" stroke-width="32" />
+  <circle cx="276" cy="664" r="38" fill="#E0F2FE" />
+
+  <!-- Right endpoint node -->
+  <circle cx="748" cy="360" r="96" fill="#0B1324" stroke="#2DD4BF" stroke-width="32" />
+  <circle cx="748" cy="360" r="38" fill="#CCFBF1" />
+</svg>

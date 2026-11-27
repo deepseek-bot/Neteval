@@ -340,6 +340,7 @@ export const appStore = reactive({
   history: [] as ReportSummary[],
   statusNotice: '' as string,
   errorNotice: '' as string,
+  natVpsUnreachableModal: null as { host: string; reason: string } | null,
 
   presets: initialPrefs.presets,
   selectedPresetId: initialPrefs.selectedPresetId,
@@ -363,6 +364,7 @@ let lastRunningTaskId = '';
 let updateStartupTimer: number | null = null;
 let updatePollTimer: number | null = null;
 let visibilityListener: (() => void) | null = null;
+let lastNatUsedVps = false;
 
 function resetForNewTask(taskId: string): void {
   if (!taskId || taskId === lastRunningTaskId) return;
@@ -440,9 +442,22 @@ function handleStateUpdate(state: AssessmentState): void {
   if ('running' in state) {
     const r = state.running;
     resetForNewTask(r.task_id);
-    appStore.errorNotice = '';
-    appStore.statusNotice = '';
     appStore.activeKind = r.task_id.startsWith('nat_') ? 'nat' : 'p2p';
+
+    if (r.stage === 'reconnecting_signaling') {
+      appStore.errorNotice = r.status_message || '自建信令服务器不可达，正在自动重试...';
+      appStore.statusNotice = '';
+    } else if (r.stage === 'waiting_for_peer') {
+      appStore.errorNotice = '';
+      appStore.statusNotice =
+        r.status_message || '已成功连接信令节点并进入房间，等待对端加入';
+    } else if (r.stage === 'punching' && r.status_message) {
+      appStore.errorNotice = '';
+      appStore.statusNotice = r.status_message;
+    } else {
+      appStore.errorNotice = '';
+      appStore.statusNotice = '';
+    }
 
     if (r.live_peer) {
       appStore.livePeer = r.live_peer;
@@ -473,6 +488,8 @@ function handleStateUpdate(state: AssessmentState): void {
   clearWaitingTimer();
 
   if ('completed' in state) {
+    appStore.errorNotice = '';
+    appStore.statusNotice = '';
     const report = state.completed;
     if (report.nat_report) {
       appStore.latestNatReport = report.nat_report;
@@ -495,7 +512,19 @@ function handleStateUpdate(state: AssessmentState): void {
   }
 
   if ('failed' in state) {
+    appStore.statusNotice = '';
     appStore.errorNotice = formatProbeError(state.failed);
+    if (
+      appStore.activeKind === 'nat' &&
+      lastNatUsedVps &&
+      typeof state.failed === 'object' &&
+      'server_unreachable' in state.failed
+    ) {
+      appStore.natVpsUnreachableModal = {
+        host: normalizeHost(appStore.serverForm.host) || '自建服务器',
+        reason: state.failed.server_unreachable,
+      };
+    }
   }
 }
 
@@ -797,11 +826,27 @@ export async function runP2pTest(): Promise<void> {
   }
 }
 
-export async function runNatTest(): Promise<void> {
+export function closeNatVpsModal(): void {
+  appStore.natVpsUnreachableModal = null;
+}
+
+export async function retryNatWithVps(): Promise<void> {
+  appStore.natVpsUnreachableModal = null;
+  await runNatTest();
+}
+
+export async function continueNatWithoutVps(): Promise<void> {
+  appStore.natVpsUnreachableModal = null;
+  await runNatTest({ skipVps: true });
+}
+
+export async function runNatTest(options?: { skipVps?: boolean }): Promise<void> {
   appStore.errorNotice = '';
   appStore.statusNotice = '';
+  appStore.natVpsUnreachableModal = null;
 
-  const useVps = appStore.natForm.useSelfHostedVps;
+  const useVps = !options?.skipVps && appStore.natForm.useSelfHostedVps;
+  lastNatUsedVps = useVps;
   const opt = (s: string) => (s.trim() ? s.trim() : null);
 
   let primary_v4_p1: string | null = null;
@@ -851,6 +896,7 @@ export async function runNatTest(): Promise<void> {
       helper_v4_p1,
       token,
       timeout_ms: Math.max(300, Number(appStore.natForm.timeout_ms) || 2500),
+      require_vps: useVps,
     });
     resetForNewTask(taskId);
   } catch (err) {
