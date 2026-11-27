@@ -261,6 +261,31 @@ pub async fn run_nat_probe(
 
     let mut endpoints = resolve_all_endpoints(input, &cancel).await?;
     let mut notes = std::mem::take(&mut endpoints.notes);
+    append_resolved_stun_ips_note(input, &endpoints, &mut notes);
+
+    if input.require_vps {
+        if let Some(p1_raw) = input.primary_v4_p1.as_deref() {
+            if endpoints.primary_v4_p1.is_none() {
+                warn(
+                    LOG_MOD,
+                    format!("Self-hosted VPS endpoint resolution failed: {p1_raw}"),
+                );
+                return Err(ProbeError::ServerUnreachable(format!(
+                    "自建探测服务器 {p1_raw} 解析失败"
+                )));
+            }
+        } else if let Some(v6_raw) = input.primary_v6.as_deref() {
+            if endpoints.primary_v6.is_none() {
+                warn(
+                    LOG_MOD,
+                    format!("Self-hosted IPv6 VPS endpoint resolution failed: {v6_raw}"),
+                );
+                return Err(ProbeError::ServerUnreachable(format!(
+                    "自建 IPv6 探测服务器 {v6_raw} 解析失败"
+                )));
+            }
+        }
+    }
 
     let has_any_v4_target = !endpoints.v4_stun.is_empty()
         || endpoints.primary_v4_p1.is_some()
@@ -325,6 +350,18 @@ pub async fn run_nat_probe(
                             );
                         }
                     } else {
+                        if input.require_vps {
+                            let p1_raw = input.primary_v4_p1.as_deref().unwrap_or("");
+                            warn(
+                                LOG_MOD,
+                                format!(
+                                    "primary_v4_p1 ({p1_addr}) timed out with require_vps=true; aborting"
+                                ),
+                            );
+                            return Err(ProbeError::ServerUnreachable(format!(
+                                "自建探测服务器 {p1_raw} 无响应（超时或 UDP 端口未放行）"
+                            )));
+                        }
                         warn(
                             LOG_MOD,
                             format!("primary_v4_p1 ({p1_addr}) timed out; skipping filtering tests"),
@@ -348,6 +385,12 @@ pub async fn run_nat_probe(
             }
             Err(e) => {
                 error(LOG_MOD, format!("Failed to bind IPv4 UDP socket: {e}"));
+                if input.require_vps && input.primary_v4_p1.is_some() {
+                    let p1_raw = input.primary_v4_p1.as_deref().unwrap_or("");
+                    return Err(ProbeError::ServerUnreachable(format!(
+                        "自建探测服务器 {p1_raw} 无法探测（本机 UDP 套接字绑定失败：{e}）"
+                    )));
+                }
                 notes.push(format!("IPv4 probe failed (socket bind error: {e})"));
             }
         }
@@ -361,6 +404,21 @@ pub async fn run_nat_probe(
         &mut notes,
     )
     .await?;
+
+    if input.require_vps
+        && input.primary_v4_p1.is_none()
+        && input.primary_v6.is_some()
+        && !notes.iter().any(|n| n == "IPv6 reachable via primary_v6")
+    {
+        let v6_raw = input.primary_v6.as_deref().unwrap_or("");
+        warn(
+            LOG_MOD,
+            format!("primary_v6 ({v6_raw}) timed out with require_vps=true; aborting"),
+        );
+        return Err(ProbeError::ServerUnreachable(format!(
+            "自建 IPv6 探测服务器 {v6_raw} 无响应"
+        )));
+    }
 
     let report = classify_nat_report(ClassificationInput {
         input,
@@ -385,6 +443,34 @@ pub async fn run_nat_probe(
     );
 
     Ok(report)
+}
+
+fn append_resolved_stun_ips_note(
+    input: &NatTaskInput,
+    endpoints: &ResolvedEndpoints,
+    notes: &mut Vec<String>,
+) {
+    if input.public_stun_servers.is_empty() {
+        return;
+    }
+    let mut entries = Vec::with_capacity(input.public_stun_servers.len());
+    for server in &input.public_stun_servers {
+        let mut ips = Vec::new();
+        for (label, addr) in endpoints.v4_stun.iter().chain(endpoints.v6_stun.iter()) {
+            if label == server {
+                let ip_str = addr.ip().to_string();
+                if !ips.contains(&ip_str) {
+                    ips.push(ip_str);
+                }
+            }
+        }
+        if ips.is_empty() {
+            entries.push(format!("{server}=DNS failed"));
+        } else {
+            entries.push(format!("{server}={}", ips.join(" / ")));
+        }
+    }
+    notes.push(format!("Resolved public STUN IPs: {}", entries.join(", ")));
 }
 
 fn validate_input(input: &NatTaskInput) -> Result<(), ProbeError> {
@@ -1402,7 +1488,13 @@ fn classify_nat_report(ctx: ClassificationInput<'_>) -> NatReport {
     if !v4_observations.is_empty() {
         let summary = v4_observations
             .iter()
-            .map(|o| format!("{}={}", o.label, o.mapped))
+            .map(|o| {
+                if o.label == o.endpoint.to_string() {
+                    format!("{}={}", o.label, o.mapped)
+                } else {
+                    format!("{} ({})={}", o.label, o.endpoint.ip(), o.mapped)
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         notes.push(format!("Observed IPv4 mappings: {summary}"));
@@ -1516,6 +1608,7 @@ mod tests {
                 helper_v4_p1: None,
                 token: None,
                 timeout_ms: 500,
+                require_vps: false,
             };
             assert!(matches!(
                 run_nat_probe(&empty, cancel.clone()).await,
@@ -1530,6 +1623,7 @@ mod tests {
                 helper_v4_p1: None,
                 token: None,
                 timeout_ms: 500,
+                require_vps: false,
             };
             assert!(matches!(
                 run_nat_probe(&p2_without_p1, cancel.clone()).await,
@@ -1544,6 +1638,7 @@ mod tests {
                 helper_v4_p1: Some("127.0.0.1:4003".into()),
                 token: None,
                 timeout_ms: 500,
+                require_vps: false,
             };
             assert!(matches!(
                 run_nat_probe(&helper_without_p1, cancel).await,
@@ -1567,6 +1662,7 @@ mod tests {
                 helper_v4_p1: None,
                 token: None,
                 timeout_ms: 5000,
+                require_vps: false,
             };
 
             let cancel = CancellationToken::new();
@@ -1665,6 +1761,7 @@ mod tests {
                 helper_v4_p1: None,
                 token: Some("tok".into()),
                 timeout_ms: 400,
+                require_vps: false,
             };
 
             let report = run_nat_probe(&input, CancellationToken::new())
@@ -1693,6 +1790,7 @@ mod tests {
             helper_v4_p1: Some("3.3.3.3:1000".into()),
             token: None,
             timeout_ms: 500,
+            require_vps: false,
         };
 
         let obs_eim = vec![
@@ -1908,6 +2006,7 @@ mod tests {
                 helper_v4_p1: Some(helper_addr.to_string()),
                 token: None,
                 timeout_ms: 400,
+                require_vps: true,
             };
 
             let report = run_nat_probe(&input, CancellationToken::new())
@@ -1924,6 +2023,56 @@ mod tests {
             assert_eq!(report.filtering, NatFiltering::FullConeNat1);
             assert_eq!(report.estimated_difficulty, "easy (NAT1 Full Cone)");
             assert_eq!(report.public_ipv4.as_deref(), Some("127.0.0.1"));
+            assert!(
+                report
+                    .notes
+                    .iter()
+                    .any(|n| n.starts_with("Resolved public STUN IPs:") && n.contains("127.0.0.1")),
+                "expected Resolved public STUN IPs note, got {:?}",
+                report.notes
+            );
+        });
+    }
+
+    #[test]
+    fn require_vps_fails_with_server_unreachable_even_if_stun_works() {
+        block_on(async {
+            let stun_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let stun_addr = stun_sock.local_addr().unwrap();
+            let stun_handle = tokio::spawn(async move {
+                let mut buf = [0u8; 512];
+                loop {
+                    let Ok((len, src)) = stun_sock.recv_from(&mut buf).await else {
+                        break;
+                    };
+                    if let Some(txn_id) = parse_stun_binding_request(&buf[..len]) {
+                        let resp = build_stun_binding_response(txn_id, src);
+                        let _ = stun_sock.send_to(&resp, src).await;
+                    }
+                }
+            });
+
+            let dead_vps = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let dead_vps_addr = dead_vps.local_addr().unwrap();
+            drop(dead_vps);
+
+            let input = NatTaskInput {
+                public_stun_servers: vec![stun_addr.to_string()],
+                primary_v4_p1: Some(dead_vps_addr.to_string()),
+                primary_v4_p2: Some(dead_vps_addr.to_string()),
+                primary_v6: None,
+                helper_v4_p1: None,
+                token: None,
+                timeout_ms: 120,
+                require_vps: true,
+            };
+
+            let res = run_nat_probe(&input, CancellationToken::new()).await;
+            stun_handle.abort();
+            assert!(
+                matches!(res, Err(ProbeError::ServerUnreachable(_))),
+                "expected ServerUnreachable when require_vps=true, got {res:?}"
+            );
         });
     }
 
@@ -1942,6 +2091,7 @@ mod tests {
                 helper_v4_p1: None,
                 token: None,
                 timeout_ms: 80,
+                require_vps: false,
             };
 
             let report = run_nat_probe(&input, CancellationToken::new())

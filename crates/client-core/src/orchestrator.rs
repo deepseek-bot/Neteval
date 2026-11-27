@@ -11,6 +11,7 @@ use protocol::{
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::local_store::LocalStore;
@@ -104,6 +105,7 @@ impl Orchestrator {
             progress_pct: 15,
             live_point: None,
             live_peer: None,
+            status_message: None,
         };
         let _ = self.inner.state_tx.send(initial_state);
         info(LOG_MOD, format!("started NAT assessment task_id={task_id}"));
@@ -163,6 +165,7 @@ impl Orchestrator {
             progress_pct: 10,
             live_point: None,
             live_peer: None,
+            status_message: None,
         };
         let _ = self.inner.state_tx.send(initial_state);
         info(
@@ -333,6 +336,7 @@ async fn run_nat_task(
                     progress_pct: 90,
                     live_point: None,
                     live_peer: None,
+                    status_message: None,
                 });
 
                 let mut report = AssessmentReport {
@@ -483,79 +487,184 @@ async fn execute_p2p_lifecycle(
         return AssessmentState::Cancelled { reason };
     }
 
-    // Stage 2: waiting_for_peer (+ 15s UDP keepalive)
+    // Stage 2: connecting signaling + waiting_for_peer (+ 15s UDP keepalive, seamless retry on ServerUnreachable)
     let mut live_peer = LivePeerInfo {
         room_code: Some(input.room_code.clone()),
         ..Default::default()
     };
     let _ = inner.state_tx.send(AssessmentState::Running {
         task_id: task_id.to_string(),
-        stage: "waiting_for_peer".into(),
-        progress_pct: 25,
+        stage: "connecting_signaling".into(),
+        progress_pct: 20,
         live_point: None,
         live_peer: Some(live_peer.clone()),
+        status_message: Some("正在连接信令节点...".into()),
     });
 
-    let pairing_res = {
-        let pair_fut = signaling_client::pair_in_room(
-            &input.signaling_ws_url,
-            &input.room_code,
-            input.token.as_deref(),
-            &input.peer_label,
-            local_candidates,
-            input.pair_timeout_secs,
-            cancel.clone(),
-        );
-        tokio::pin!(pair_fut);
+    let pair_deadline = Instant::now() + Duration::from_secs(input.pair_timeout_secs);
+    let mut keepalive_tick =
+        tokio::time::interval(Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
+    keepalive_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    keepalive_tick.tick().await;
 
-        let mut keepalive_tick =
-            tokio::time::interval(Duration::from_secs(KEEPALIVE_INTERVAL_SECS));
-        keepalive_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        keepalive_tick.tick().await;
+    let mut attempt = 1u32;
+    let mut last_unreachable = String::new();
+    let (pairing, signal_guard) = loop {
+        let rem_dur = pair_deadline.saturating_duration_since(Instant::now());
+        let rem_secs = rem_dur.as_secs();
+        if rem_secs == 0 {
+            p2p_engine::abort_session(session_handle);
+            let reason = if last_unreachable.is_empty() {
+                "signaling server unreachable before timeout".to_string()
+            } else {
+                last_unreachable
+            };
+            warn(
+                LOG_MOD,
+                format!("task_id={task_id} signaling retry budget exhausted: {reason}"),
+            );
+            return AssessmentState::Failed(ProbeError::ServerUnreachable(reason));
+        }
 
-        loop {
-            tokio::select! {
-                res = &mut pair_fut => break res,
-                _ = keepalive_tick.tick() => {
-                    if let Err(err) = p2p_engine::keepalive_session(
-                        &session_handle,
-                        input.echo_udp_v4.as_deref(),
-                        input.echo_udp_v6.as_deref(),
-                        &input.public_stun_servers,
-                        input.token.as_deref(),
-                    ).await {
-                        warn(
-                            LOG_MOD,
-                            format!("task_id={task_id} waiting keepalive warning: {err}"),
-                        );
+        let candidates_for_attempt = local_candidates.clone();
+        let live_peer_for_join = live_peer.clone();
+        let pairing_res = {
+            let pair_fut = signaling_client::pair_in_room_with_events(
+                &input.signaling_ws_url,
+                &input.room_code,
+                input.token.as_deref(),
+                &input.peer_label,
+                candidates_for_attempt,
+                rem_secs,
+                cancel.clone(),
+                |joined_room, _ttl| {
+                    info(
+                        LOG_MOD,
+                        format!(
+                            "task_id={task_id} connected signaling node and joined room={joined_room}"
+                        ),
+                    );
+                    let _ = inner.state_tx.send(AssessmentState::Running {
+                        task_id: task_id.to_string(),
+                        stage: "waiting_for_peer".into(),
+                        progress_pct: 25,
+                        live_point: None,
+                        live_peer: Some(live_peer_for_join.clone()),
+                        status_message: Some(format!(
+                            "已成功连接信令节点并进入房间 {joined_room}，等待对端加入"
+                        )),
+                    });
+                },
+            );
+            tokio::pin!(pair_fut);
+
+            loop {
+                tokio::select! {
+                    res = &mut pair_fut => break res,
+                    _ = keepalive_tick.tick() => {
+                        if let Err(err) = p2p_engine::keepalive_session(
+                            &session_handle,
+                            input.echo_udp_v4.as_deref(),
+                            input.echo_udp_v6.as_deref(),
+                            &input.public_stun_servers,
+                            input.token.as_deref(),
+                        ).await {
+                            warn(
+                                LOG_MOD,
+                                format!("task_id={task_id} waiting keepalive warning: {err}"),
+                            );
+                        }
                     }
                 }
+            }
+        };
+
+        match pairing_res {
+            Ok(res) => break res,
+            Err(ProbeError::Cancelled) => {
+                p2p_engine::abort_session(session_handle);
+                let reason = cancel_reason.lock().ok().and_then(|g| g.clone());
+                info(
+                    LOG_MOD,
+                    format!("task_id={task_id} cancelled during signaling/waiting"),
+                );
+                return AssessmentState::Cancelled { reason };
+            }
+            Err(ProbeError::ServerUnreachable(reason)) => {
+                let rem = pair_deadline.saturating_duration_since(Instant::now());
+                if rem <= Duration::from_secs(1) {
+                    p2p_engine::abort_session(session_handle);
+                    warn(
+                        LOG_MOD,
+                        format!("task_id={task_id} server unreachable with insufficient time to retry: {reason}"),
+                    );
+                    return AssessmentState::Failed(ProbeError::ServerUnreachable(reason));
+                }
+
+                let retry_delay_secs = u64::from(attempt.saturating_add(1)).clamp(2, 5);
+                let msg = format!(
+                    "自建信令服务器不可达（{reason}），{retry_delay_secs} 秒后第 {attempt} 次自动重试..."
+                );
+                warn(LOG_MOD, format!("task_id={task_id} {msg}"));
+                let _ = inner.state_tx.send(AssessmentState::Running {
+                    task_id: task_id.to_string(),
+                    stage: "reconnecting_signaling".into(),
+                    progress_pct: 20,
+                    live_point: None,
+                    live_peer: Some(live_peer.clone()),
+                    status_message: Some(msg),
+                });
+
+                last_unreachable = reason;
+                let sleep_fut = tokio::time::sleep(Duration::from_secs(retry_delay_secs).min(rem));
+                tokio::pin!(sleep_fut);
+                loop {
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            p2p_engine::abort_session(session_handle);
+                            let reason = cancel_reason.lock().ok().and_then(|g| g.clone());
+                            info(
+                                LOG_MOD,
+                                format!("task_id={task_id} cancelled during signaling reconnect backoff"),
+                            );
+                            return AssessmentState::Cancelled { reason };
+                        }
+                        _ = &mut sleep_fut => break,
+                        _ = keepalive_tick.tick() => {
+                            let _ = p2p_engine::keepalive_session(
+                                &session_handle,
+                                input.echo_udp_v4.as_deref(),
+                                input.echo_udp_v6.as_deref(),
+                                &input.public_stun_servers,
+                                input.token.as_deref(),
+                            ).await;
+                        }
+                    }
+                }
+
+                attempt = attempt.saturating_add(1);
+                let _ = inner.state_tx.send(AssessmentState::Running {
+                    task_id: task_id.to_string(),
+                    stage: "reconnecting_signaling".into(),
+                    progress_pct: 20,
+                    live_point: None,
+                    live_peer: Some(live_peer.clone()),
+                    status_message: Some(format!("正在第 {attempt} 次重连信令节点...")),
+                });
+            }
+            Err(err) => {
+                p2p_engine::abort_session(session_handle);
+                warn(
+                    LOG_MOD,
+                    format!("task_id={task_id} failed during waiting_for_peer: {err}"),
+                );
+                return AssessmentState::Failed(err);
             }
         }
     };
 
-    let (pairing, signal_guard) = match pairing_res {
-        Ok(res) => res,
-        Err(ProbeError::Cancelled) => {
-            p2p_engine::abort_session(session_handle);
-            let reason = cancel_reason.lock().ok().and_then(|g| g.clone());
-            info(
-                LOG_MOD,
-                format!("task_id={task_id} cancelled during waiting_for_peer"),
-            );
-            return AssessmentState::Cancelled { reason };
-        }
-        Err(err) => {
-            p2p_engine::abort_session(session_handle);
-            warn(
-                LOG_MOD,
-                format!("task_id={task_id} failed during waiting_for_peer: {err}"),
-            );
-            return AssessmentState::Failed(err);
-        }
-    };
-
     // Stage 3 & 4: punching + sampling
+    let peer_label_display = pairing.peer_label.clone();
     live_peer.peer_label = Some(pairing.peer_label.clone());
     let _ = inner.state_tx.send(AssessmentState::Running {
         task_id: task_id.to_string(),
@@ -563,6 +672,9 @@ async fn execute_p2p_lifecycle(
         progress_pct: 45,
         live_point: None,
         live_peer: Some(live_peer.clone()),
+        status_message: Some(format!(
+            "已连接节点并匹配对端 {peer_label_display}，正在同步打洞"
+        )),
     });
 
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<P2pEvent>();
@@ -699,6 +811,7 @@ async fn execute_p2p_lifecycle(
                 progress_pct: 95,
                 live_point: None,
                 live_peer: Some(live_peer.clone()),
+                status_message: None,
             });
 
             let mut report = AssessmentReport {
@@ -756,6 +869,7 @@ async fn handle_p2p_event(
                 progress_pct: 55,
                 live_point: None,
                 live_peer: Some(live_peer.clone()),
+                status_message: None,
             });
         }
         P2pEvent::LatencyPoint(pt) => {
@@ -766,6 +880,7 @@ async fn handle_p2p_event(
                 progress_pct: pct,
                 live_point: Some(pt),
                 live_peer: Some(live_peer.clone()),
+                status_message: None,
             });
         }
     }
@@ -987,5 +1102,100 @@ mod tests {
 
         c1.cancel();
         c2.cancel();
+    }
+
+    #[tokio::test]
+    async fn p2p_seamless_retry_and_room_joined_notification() {
+        use futures_util::{SinkExt, StreamExt};
+        use protocol::{ServerSignalMsg, WaitingForPeerMsg};
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+        let dir = TestDir::new("p2p_retry");
+        // Reserve a free port, drop it so initial connect fails while unbound,
+        // wait until orchestrator enters `reconnecting_signaling`, then bind the
+        // mock server so the seamless retry connects and enters the room.
+        let probe_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe_listener.local_addr().unwrap();
+        drop(probe_listener);
+
+        let bind_signal = Arc::new(tokio::sync::Notify::new());
+        let bind_wait = Arc::clone(&bind_signal);
+        let srv_handle = tokio::spawn(async move {
+            bind_wait.notified().await;
+            let listener = TcpListener::bind(addr).await.unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = accept_async(stream).await.unwrap();
+            let _join = ws.next().await;
+            let waiting = ServerSignalMsg::WaitingForPeer(WaitingForPeerMsg {
+                room_code: "R3TRY88".into(),
+                ttl_secs: 30,
+            });
+            ws.send(Message::text(serde_json::to_string(&waiting).unwrap()))
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        });
+
+        let orch = Orchestrator::new(&dir.path);
+        let mut rx = orch.subscribe();
+
+        let input = P2pTaskInput {
+            signaling_ws_url: format!("ws://{addr}/ws"),
+            room_code: "R3TRY88".into(),
+            token: None,
+            peer_label: "tester".into(),
+            echo_udp_v4: None,
+            echo_udp_v6: None,
+            public_stun_servers: vec![],
+            candidate_timeout_ms: 200,
+            pair_timeout_secs: 10,
+            punch_timeout_ms: 3000,
+            window_secs: 5,
+            packet_rate_hz: 10,
+            strategy: Default::default(),
+        };
+
+        orch.start_p2p_assessment(input).await.unwrap();
+
+        let mut saw_reconnect = false;
+        let mut saw_joined = false;
+        let deadline = Instant::now() + Duration::from_secs(9);
+        while Instant::now() < deadline {
+            if let AssessmentState::Running {
+                stage,
+                status_message,
+                ..
+            } = rx.borrow().clone()
+            {
+                if stage == "reconnecting_signaling" && !saw_reconnect {
+                    saw_reconnect = true;
+                    bind_signal.notify_one();
+                }
+                if stage == "waiting_for_peer"
+                    && status_message
+                        .as_deref()
+                        .is_some_and(|m| m.contains("R3TRY88"))
+                {
+                    saw_joined = true;
+                    break;
+                }
+            }
+            if tokio::time::timeout(Duration::from_secs(6), rx.changed())
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        let _ = orch.cancel_current(Some("test_done".into())).await;
+        srv_handle.abort();
+
+        assert!(saw_reconnect, "expected reconnecting_signaling stage");
+        assert!(
+            saw_joined,
+            "expected waiting_for_peer stage with room-joined status_message"
+        );
     }
 }

@@ -88,6 +88,7 @@ fn assessment_state_and_probe_error_serialize_with_expected_tags() {
             active_peer_addr: Some("198.51.100.2:40000".into()),
             punch_elapsed_ms: Some(42),
         }),
+        status_message: None,
     };
     let v = serde_json::to_value(&running).unwrap();
     assert_eq!(v["running"]["stage"], "sampling");
@@ -169,6 +170,7 @@ async fn gui_state_runs_nat_assessment_end_to_end_and_persists_report() {
             helper_v4_p1: None,
             token: None,
             timeout_ms: 800,
+            require_vps: false,
         })
         .await
         .expect("start_nat should succeed");

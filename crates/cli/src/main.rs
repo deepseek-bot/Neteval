@@ -233,6 +233,7 @@ async fn run_nat_command(orchestrator: Orchestrator, args: NatArgs, json: bool) 
         helper_v4_p1: args.helper_p1,
         token: args.token,
         timeout_ms: args.timeout_ms,
+        require_vps: false,
     };
 
     let mut rx = orchestrator.subscribe();

@@ -335,6 +335,33 @@ pub async fn pair_in_room(
     timeout_secs: u64,
     cancel: CancellationToken,
 ) -> Result<(PairingResult, SignalGuard), ProbeError> {
+    pair_in_room_with_events(
+        ws_url,
+        room_code,
+        token,
+        peer_label,
+        local_candidates,
+        timeout_secs,
+        cancel,
+        |_, _| {},
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn pair_in_room_with_events<F>(
+    ws_url: &str,
+    room_code: &str,
+    token: Option<&str>,
+    peer_label: &str,
+    local_candidates: Vec<Candidate>,
+    timeout_secs: u64,
+    cancel: CancellationToken,
+    mut on_room_joined: F,
+) -> Result<(PairingResult, SignalGuard), ProbeError>
+where
+    F: FnMut(&str, u32),
+{
     if let Err(e) = validate_room_code(room_code) {
         logger::warn(MODULE, format!("invalid room_code rejected: {e}"));
         return Err(e);
@@ -453,6 +480,7 @@ pub async fn pair_in_room(
         }
     }
 
+    let mut joined_notified = false;
     loop {
         let ev = tokio::select! {
             biased;
@@ -553,6 +581,10 @@ pub async fn pair_in_room(
                                 waiting.room_code, waiting.ttl_secs
                             ),
                         );
+                        if !joined_notified {
+                            joined_notified = true;
+                            on_room_joined(&waiting.room_code, waiting.ttl_secs);
+                        }
                     }
                     ServerSignalMsg::StartPunch(start) => {
                         logger::info(
@@ -566,6 +598,9 @@ pub async fn pair_in_room(
                                 start.punch_duration_ms
                             ),
                         );
+                        if !joined_notified {
+                            on_room_joined(room_code, 0);
+                        }
                         let guard = spawn_signal_guard(ws);
                         let result = PairingResult {
                             session_id: start.session_id,

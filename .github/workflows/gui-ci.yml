@@ -142,6 +142,7 @@ jobs:
           npm ci
           npm run build
           npx tauri android init --ci --skip-targets-install
+          npx tauri icon src-tauri/icons/app-icon.svg
 
       - name: Build arm64 APK
         working-directory: apps/gui

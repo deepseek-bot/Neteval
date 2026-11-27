@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.3.5] - 2026-11-28
+
+### Added
+- **Strict Self-Hosted VPS Reachability Check & NAT Prompt (`crates/protocol`, `crates/client-core/src/nat_prober.rs`, `apps/gui/src/components/NatView.vue`, `appState.ts`)**: Added `require_vps` to `NatTaskInput`; when self-hosted VPS mode fails DNS resolution or times out, NAT probing returns `server_unreachable` instead of silently falling back to public STUN, and the GUI opens an action modal offering retry or continuing without VPS.
+- **P2P Seamless Reconnect & Room-Joined Notification (`crates/client-core/src/signaling_client.rs`, `orchestrator.rs`, `apps/gui/src/components/P2pView.vue`, `appState.ts`)**: Added `status_message` to `AssessmentState::Running`; P2P pairing now emits explicit connecting / room-joined confirmation notices and automatically retries `ServerUnreachable` signaling errors within `pair_timeout_secs` while keeping UDP NAT pinholes warm.
+- **Public STUN Resolved IP Display (`crates/client-core/src/nat_prober.rs`, `apps/gui/src/utils/format.ts`)**: Included resolved public STUN IPs (`Resolved public STUN IPs` and per-endpoint IPs inside `Observed IPv4 mappings`) in NAT reports and GUI output cards.
+
+### Changed
+- **Unified Windows & Android App Icon (`apps/gui/src-tauri/icons/app-icon.svg`, `.github/workflows/release.yml`, `.github/workflows/gui-ci.yml`)**: Replaced the default Tauri icon with a custom vector icon (`app-icon.svg`) regenerated via `npx tauri icon` for Windows and applied after `tauri android init` in Android CI/Release workflows.
+
 ## [1.3.4] - 2026-11-27
 
 ### Added
