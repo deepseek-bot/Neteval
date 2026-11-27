@@ -86,22 +86,25 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Build GUI dist
+      - name: Install frontend dependencies
         working-directory: apps/gui
-        run: |
-          npm ci
-          npm run build
+        run: npm ci
 
-      - name: Build GUI binary
-        run: cargo build --release -p neteval-gui --features custom-protocol
+      - name: Build Windows NSIS installer
+        working-directory: apps/gui
+        run: npx tauri build --bundles nsis --ci
 
       - name: Stage artifacts and checksums
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target/release/neteval-gui.exe dist/neteval-gui-windows-x86_64.exe
-          $h = Get-FileHash dist/neteval-gui-windows-x86_64.exe -Algorithm SHA256
-          $line = "$($h.Hash.ToLowerInvariant())  neteval-gui-windows-x86_64.exe"
+          $setup = Get-ChildItem -Path target/release/bundle/nsis -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $setup) {
+            throw "Expected NSIS setup installer under target/release/bundle/nsis"
+          }
+          Copy-Item $setup.FullName dist/neteval-gui-windows-x86_64-setup.exe
+          $h = Get-FileHash dist/neteval-gui-windows-x86_64-setup.exe -Algorithm SHA256
+          $line = "$($h.Hash.ToLowerInvariant())  neteval-gui-windows-x86_64-setup.exe"
           Set-Content -Path dist/SHA256SUMS-windows-gui.txt -Value $line -Encoding ASCII
 
       - uses: actions/upload-artifact@v4

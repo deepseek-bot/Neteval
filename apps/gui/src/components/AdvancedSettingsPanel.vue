@@ -4,7 +4,9 @@ import {
   appStore,
   applyPreset,
   applyServerPaste,
+  checkForUpdates,
   deletePreset,
+  openUpdateDownload,
   saveCurrentAsPreset,
   savePrefs,
 } from '../stores/appState';
@@ -51,6 +53,26 @@ function onHostPaste(e: ClipboardEvent): void {
     e.preventDefault();
   }
 }
+
+const updateStatusText = computed(() => {
+  switch (appStore.updateStatus) {
+    case 'checking':
+      return '正在检查...';
+    case 'available':
+      return appStore.updateInfo ? `发现 v${appStore.updateInfo.latestVersion}` : '发现新版本';
+    case 'up_to_date':
+      return '已是最新';
+    case 'error':
+      return appStore.updateError || '检查失败';
+    default:
+      return '';
+  }
+});
+
+const lastCheckText = computed(() => {
+  if (!appStore.lastUpdateCheckAt) return '';
+  return new Date(appStore.lastUpdateCheckAt).toLocaleString();
+});
 </script>
 
 <template>
@@ -256,6 +278,43 @@ function onHostPaste(e: ClipboardEvent): void {
           />
         </label>
       </section>
+
+      <section class="adv-section">
+        <div class="sec-title">版本与更新</div>
+        <div class="label-row update-row">
+          <span class="mono">当前版本: v{{ appStore.appVersion }}</span>
+          <span v-if="updateStatusText" class="update-status">{{ updateStatusText }}</span>
+        </div>
+        <div v-if="lastCheckText" class="update-meta">
+          上次检查: {{ lastCheckText }}
+        </div>
+        <label class="checkbox-row">
+          <input
+            v-model="appStore.autoCheckUpdates"
+            type="checkbox"
+            @change="savePrefs"
+          />
+          <span>自动定时检查更新（每 6 小时）</span>
+        </label>
+        <div class="row">
+          <button
+            type="button"
+            class="btn-sm"
+            :disabled="appStore.updateStatus === 'checking'"
+            @click="checkForUpdates(false)"
+          >
+            {{ appStore.updateStatus === 'checking' ? '检查中...' : '检查更新' }}
+          </button>
+          <button
+            v-if="appStore.updateInfo?.hasUpdate"
+            type="button"
+            class="btn-sm btn-primary"
+            @click="openUpdateDownload"
+          >
+            下载 v{{ appStore.updateInfo.latestVersion }}
+          </button>
+        </div>
+      </section>
     </div>
   </aside>
 </template>
@@ -398,5 +457,28 @@ function onHostPaste(e: ClipboardEvent): void {
 .field-err {
   color: var(--danger);
   font-size: 11px;
+}
+
+.update-row {
+  font-size: 12px;
+}
+
+.update-status {
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+.update-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
 }
 </style>

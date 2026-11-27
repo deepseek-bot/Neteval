@@ -1,15 +1,25 @@
 import { reactive } from 'vue';
+import pkg from '../../package.json';
 import {
   cancelCurrent,
   deleteReport,
+  getAppVersion,
   getCurrentState,
   getReport,
   listHistory,
+  openExternalUrl,
   parseInvokeError,
   startNatAssessment,
   startP2pAssessment,
   subscribeAssessmentState,
 } from '../api/tauri';
+import {
+  AUTO_CHECK_INTERVAL_MS,
+  STARTUP_COOLDOWN_MS,
+  checkLatestRelease,
+  normalizeVersion,
+  type UpdateInfo,
+} from '../utils/updater';
 import {
   DEFAULT_PROBE_PORT_P1,
   DEFAULT_PROBE_PORT_P2,
@@ -62,6 +72,11 @@ interface StoredPrefs {
     stun_text: string;
     timeout_ms: number;
   };
+  update?: {
+    autoCheckUpdates: boolean;
+    lastUpdateCheckAt: number;
+    dismissedVersion: string;
+  };
 }
 
 function defaultPrefs(): StoredPrefs {
@@ -92,6 +107,11 @@ function defaultPrefs(): StoredPrefs {
       useSelfHostedVps: false,
       stun_text: DEFAULT_STUN_SERVERS.join(', '),
       timeout_ms: 2500,
+    },
+    update: {
+      autoCheckUpdates: true,
+      lastUpdateCheckAt: 0,
+      dismissedVersion: '',
     },
   };
 }
@@ -200,6 +220,10 @@ function loadPrefs(): StoredPrefs {
       parsed.nat && typeof parsed.nat === 'object'
         ? (parsed.nat as Record<string, unknown>)
         : {};
+    const rawUpdate =
+      parsed.update && typeof parsed.update === 'object'
+        ? (parsed.update as Record<string, unknown>)
+        : {};
     const rawServer =
       parsed.server && typeof parsed.server === 'object'
         ? (parsed.server as Record<string, unknown>)
@@ -263,6 +287,19 @@ function loadPrefs(): StoredPrefs {
           typeof rawNat.stun_text === 'string' ? rawNat.stun_text : base.nat.stun_text,
         timeout_ms: Number(rawNat.timeout_ms) || base.nat.timeout_ms,
       },
+      update: {
+        autoCheckUpdates:
+          typeof rawUpdate.autoCheckUpdates === 'boolean'
+            ? rawUpdate.autoCheckUpdates
+            : (base.update?.autoCheckUpdates ?? true),
+        lastUpdateCheckAt:
+          typeof rawUpdate.lastUpdateCheckAt === 'number' &&
+          Number.isFinite(rawUpdate.lastUpdateCheckAt)
+            ? rawUpdate.lastUpdateCheckAt
+            : 0,
+        dismissedVersion:
+          typeof rawUpdate.dismissedVersion === 'string' ? rawUpdate.dismissedVersion : '',
+      },
     };
   } catch {
     return base;
@@ -309,12 +346,23 @@ export const appStore = reactive({
   serverForm: initialPrefs.server,
   p2pForm: initialPrefs.p2p,
   natForm: initialPrefs.nat,
+
+  appVersion: normalizeVersion(pkg.version),
+  autoCheckUpdates: initialPrefs.update?.autoCheckUpdates ?? true,
+  lastUpdateCheckAt: initialPrefs.update?.lastUpdateCheckAt ?? 0,
+  updateDismissedVersion: initialPrefs.update?.dismissedVersion ?? '',
+  updateStatus: 'idle' as 'idle' | 'checking' | 'available' | 'up_to_date' | 'error',
+  updateInfo: null as UpdateInfo | null,
+  updateError: '' as string,
 });
 
 let initialized = false;
 let countdownTimer: number | null = null;
 let unlistenFn: (() => void) | null = null;
 let lastRunningTaskId = '';
+let updateStartupTimer: number | null = null;
+let updatePollTimer: number | null = null;
+let visibilityListener: (() => void) | null = null;
 
 function resetForNewTask(taskId: string): void {
   if (!taskId || taskId === lastRunningTaskId) return;
@@ -336,6 +384,11 @@ export function savePrefs(): void {
       server: appStore.serverForm,
       p2p: appStore.p2pForm,
       nat: appStore.natForm,
+      update: {
+        autoCheckUpdates: appStore.autoCheckUpdates,
+        lastUpdateCheckAt: appStore.lastUpdateCheckAt,
+        dismissedVersion: appStore.updateDismissedVersion,
+      },
     };
     localStorage.setItem(PREFS_KEY, JSON.stringify(payload));
   } catch {
@@ -462,18 +515,46 @@ export async function initStore(): Promise<void> {
   updateMobile();
   window.addEventListener('resize', updateMobile);
 
+  visibilityListener = () => {
+    if (isAndroidUa && document.visibilityState === 'hidden' && isRunning()) {
+      void cancelCurrent('android_background');
+    }
+    if (
+      document.visibilityState === 'visible' &&
+      appStore.autoCheckUpdates &&
+      Date.now() - appStore.lastUpdateCheckAt >= AUTO_CHECK_INTERVAL_MS
+    ) {
+      void checkForUpdates(true);
+    }
+  };
+  document.addEventListener('visibilitychange', visibilityListener);
+
   if (isAndroidUa) {
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'hidden' && isRunning()) {
-        void cancelCurrent('android_background');
-      }
-    });
     window.addEventListener('offline', () => {
       if (isRunning()) {
         void cancelCurrent('network_changed');
       }
     });
   }
+
+  appStore.appVersion = normalizeVersion(await getAppVersion(pkg.version));
+
+  if (
+    appStore.autoCheckUpdates &&
+    Date.now() - appStore.lastUpdateCheckAt >= STARTUP_COOLDOWN_MS
+  ) {
+    updateStartupTimer = window.setTimeout(() => {
+      updateStartupTimer = null;
+      if (appStore.autoCheckUpdates) {
+        void checkForUpdates(true);
+      }
+    }, 3000);
+  }
+  updatePollTimer = window.setInterval(() => {
+    if (appStore.autoCheckUpdates) {
+      void checkForUpdates(true);
+    }
+  }, AUTO_CHECK_INTERVAL_MS);
 
   try {
     unlistenFn = await subscribeAssessmentState(handleStateUpdate);
@@ -487,10 +568,62 @@ export async function initStore(): Promise<void> {
 
 export function disposeStore(): void {
   clearWaitingTimer();
+  if (updateStartupTimer !== null) {
+    window.clearTimeout(updateStartupTimer);
+    updateStartupTimer = null;
+  }
+  if (updatePollTimer !== null) {
+    window.clearInterval(updatePollTimer);
+    updatePollTimer = null;
+  }
+  if (visibilityListener) {
+    document.removeEventListener('visibilitychange', visibilityListener);
+    visibilityListener = null;
+  }
   if (unlistenFn) {
     unlistenFn();
     unlistenFn = null;
   }
+}
+
+export async function checkForUpdates(silent = false): Promise<void> {
+  if (appStore.updateStatus === 'checking') return;
+  appStore.updateStatus = 'checking';
+  appStore.updateError = '';
+  try {
+    const info = await checkLatestRelease(appStore.appVersion);
+    appStore.updateInfo = info;
+    appStore.lastUpdateCheckAt = Date.now();
+    appStore.updateStatus = info.hasUpdate ? 'available' : 'up_to_date';
+    if (!info.hasUpdate) {
+      appStore.updateDismissedVersion = '';
+    }
+    savePrefs();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '检查更新失败';
+    appStore.updateStatus = 'error';
+    appStore.updateError = msg;
+    if (!silent) {
+      appStore.errorNotice = msg;
+    }
+  }
+}
+
+export function dismissUpdateBanner(): void {
+  if (appStore.updateInfo?.latestVersion) {
+    appStore.updateDismissedVersion = appStore.updateInfo.latestVersion;
+    savePrefs();
+  }
+}
+
+export async function openUpdateDownload(): Promise<void> {
+  if (!appStore.updateInfo) return;
+  await openExternalUrl(appStore.updateInfo.downloadUrl);
+}
+
+export async function openUpdateReleasePage(): Promise<void> {
+  if (!appStore.updateInfo) return;
+  await openExternalUrl(appStore.updateInfo.releaseUrl);
 }
 
 export async function refreshHistory(): Promise<void> {

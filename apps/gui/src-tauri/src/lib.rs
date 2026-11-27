@@ -92,6 +92,45 @@ fn get_current_state(state: tauri::State<'_, GuiState>) -> AssessmentState {
     state.current_state()
 }
 
+#[tauri::command]
+fn open_external_url(url: String) -> Result<bool, String> {
+    if !url.starts_with("https://") || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("invalid url".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("rundll32")
+            .args(["url.dll,FileProtocolHandler", &url])
+            .spawn()
+            .map_err(|err| format!("failed to launch browser: {err}"))?;
+        return Ok(true);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|err| format!("failed to launch browser: {err}"))?;
+        return Ok(true);
+    }
+
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|err| format!("failed to launch browser: {err}"))?;
+        return Ok(true);
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        Ok(false)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -134,7 +173,8 @@ pub fn run() {
             list_history,
             get_report,
             delete_report,
-            get_current_state
+            get_current_state,
+            open_external_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building NetEval GUI application");

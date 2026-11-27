@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.4] - 2026-11-27
+
+### Added
+- **In-App GitHub Update Checker (`apps/gui/src/utils/updater.ts`, `appState.ts`, `App.vue`, `AdvancedSettingsPanel.vue`, `src-tauri/src/lib.rs`)**: Added automatic periodic (6-hour interval, startup 3s check with 30-minute cooldown, and foreground resume check) and manual update checking against GitHub Releases API, displaying a dismissible top banner and an update section in Advanced Settings with direct platform asset (`*-setup.exe` / `*.apk`) browser download links.
+
+### Changed
+- **Windows NSIS `setup.exe` Packaging (`apps/gui/src-tauri/tauri.conf.json`, `.github/workflows/release.yml`)**: Configured Tauri Windows bundle to build a `currentUser` NSIS installer (`SimpChinese`/`English`) via `npx tauri build --bundles nsis --ci` and stage `neteval-gui-windows-x86_64-setup.exe` instead of a standalone raw executable.
+
 ## [1.3.3] - 2026-11-27
 
 ### Added

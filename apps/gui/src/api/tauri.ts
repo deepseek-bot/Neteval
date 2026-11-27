@@ -1,3 +1,4 @@
+import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
@@ -35,6 +36,32 @@ export function deleteReport(id: string): Promise<void> {
 
 export function getCurrentState(): Promise<AssessmentState> {
   return invoke<AssessmentState>('get_current_state');
+}
+
+export async function getAppVersion(fallback: string): Promise<string> {
+  try {
+    return await getVersion();
+  } catch {
+    return fallback;
+  }
+}
+
+export async function openExternalUrl(url: string): Promise<void> {
+  try {
+    const handled = await invoke<boolean>('open_external_url', { url });
+    if (handled) return;
+  } catch {
+    // Fall back to anchor click on Android / browser runtimes
+  }
+  if (typeof document !== 'undefined') {
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.target = '_blank';
+    anchor.rel = 'noopener noreferrer';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }
 }
 
 export function subscribeAssessmentState(

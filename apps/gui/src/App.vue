@@ -6,7 +6,14 @@ import NatView from './components/NatView.vue';
 import P2pView from './components/P2pView.vue';
 import PeerSidebar from './components/PeerSidebar.vue';
 import ResultModal from './components/ResultModal.vue';
-import { appStore, disposeStore, initStore } from './stores/appState';
+import {
+  appStore,
+  dismissUpdateBanner,
+  disposeStore,
+  initStore,
+  openUpdateDownload,
+  openUpdateReleasePage,
+} from './stores/appState';
 
 onMounted(() => {
   void initStore();
@@ -70,6 +77,44 @@ onBeforeUnmount(() => {
         </button>
       </div>
     </header>
+
+    <div
+      v-if="
+        appStore.updateInfo?.hasUpdate &&
+        appStore.updateDismissedVersion !== appStore.updateInfo.latestVersion
+      "
+      class="update-strip"
+    >
+      <div class="update-banner">
+        <span class="update-text">
+          发现新版本 v{{ appStore.updateInfo.latestVersion }}（当前 v{{ appStore.appVersion }}）
+        </span>
+        <div class="update-actions">
+          <button
+            type="button"
+            class="btn-sm btn-primary"
+            @click="openUpdateDownload"
+          >
+            下载更新
+          </button>
+          <button
+            type="button"
+            class="btn-sm"
+            @click="openUpdateReleasePage"
+          >
+            发布页
+          </button>
+          <button
+            type="button"
+            class="btn-sm"
+            aria-label="关闭更新提示"
+            @click="dismissUpdateBanner"
+          >
+            ×
+          </button>
+        </div>
+      </div>
+    </div>
 
     <div v-if="appStore.errorNotice" class="notice-strip">
       <div class="banner-error">{{ appStore.errorNotice }}</div>
@@ -211,6 +256,37 @@ onBeforeUnmount(() => {
 .notice-strip {
   padding: 6px 12px 0;
   flex-shrink: 0;
+}
+
+.update-strip {
+  padding: 6px 12px 0;
+  flex-shrink: 0;
+}
+
+.update-banner {
+  background: var(--accent-soft);
+  color: var(--text);
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.update-text {
+  font-weight: 600;
+  color: var(--accent-hover);
+}
+
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
 .main-body {
