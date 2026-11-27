@@ -7,7 +7,8 @@ use client_core::orchestrator::Orchestrator;
 use protocol::{
     AssessmentReport, AssessmentState, DEFAULT_PACKET_RATE_HZ, DEFAULT_PUBLIC_STUN_SERVERS,
     DEFAULT_PUNCH_TIMEOUT_MS, DEFAULT_WINDOW_SECS, IpFamily, NatFiltering, NatMapping, NatStatus,
-    NatTaskInput, P2pTaskInput, P2pVerdict, ProbeError, PunchStrategy, ROOM_WAIT_TTL_SECS,
+    NatTaskInput, P2pLatencyTier, P2pStabilityGrade, P2pTaskInput, P2pVerdict, ProbeError,
+    PunchStrategy, ROOM_WAIT_TTL_SECS,
 };
 
 #[derive(Debug, Parser)]
@@ -479,8 +480,26 @@ fn print_report(report: &AssessmentReport, json: bool) {
                 .unwrap_or_else(|| "-".into())
         );
         println!(
+            "P50 RTT       : {}",
+            p2p.p50_rtt_ms
+                .map(|v| format!("{v:.2}ms"))
+                .unwrap_or_else(|| "-".into())
+        );
+        println!(
             "P95 RTT       : {}",
             p2p.p95_rtt_ms
+                .map(|v| format!("{v:.2}ms"))
+                .unwrap_or_else(|| "-".into())
+        );
+        println!(
+            "IQR (P75-P25) : {}",
+            p2p.iqr_ms
+                .map(|v| format!("{v:.2}ms"))
+                .unwrap_or_else(|| "-".into())
+        );
+        println!(
+            "Tail (P95-P50): {}",
+            p2p.tail_bloat_ms
                 .map(|v| format!("{v:.2}ms"))
                 .unwrap_or_else(|| "-".into())
         );
@@ -489,6 +508,24 @@ fn print_report(report: &AssessmentReport, json: bool) {
             p2p.jitter_ms
                 .map(|v| format!("{v:.2}ms"))
                 .unwrap_or_else(|| "-".into())
+        );
+        println!(
+            "Spike (>P50+30): {}",
+            p2p.spike_ratio
+                .map(|v| format!("{:.1}%", v * 100.0))
+                .unwrap_or_else(|| "-".into())
+        );
+        println!(
+            "Latency Tier  : {}",
+            p2p.latency_tier
+                .map(format_latency_tier)
+                .unwrap_or("-")
+        );
+        println!(
+            "Stability     : {}",
+            p2p.stability_grade
+                .map(format_stability_grade)
+                .unwrap_or("-")
         );
         println!("Verdict       : {}", format_p2p_verdict(p2p.verdict));
         if let Some(reason) = &p2p.failure_reason {
@@ -504,6 +541,25 @@ fn format_ip_family(f: IpFamily) -> &'static str {
     match f {
         IpFamily::Ipv4 => "ipv4",
         IpFamily::Ipv6 => "ipv6",
+    }
+}
+
+fn format_latency_tier(t: P2pLatencyTier) -> &'static str {
+    match t {
+        P2pLatencyTier::UltraLow => "ultra_low",
+        P2pLatencyTier::Low => "low",
+        P2pLatencyTier::Medium => "medium",
+        P2pLatencyTier::High => "high",
+    }
+}
+
+fn format_stability_grade(g: P2pStabilityGrade) -> &'static str {
+    match g {
+        P2pStabilityGrade::RockSolid => "rock_solid",
+        P2pStabilityGrade::Good => "good",
+        P2pStabilityGrade::MildJitter => "mild_jitter",
+        P2pStabilityGrade::SevereJitter => "severe_jitter",
+        P2pStabilityGrade::Failed => "failed",
     }
 }
 

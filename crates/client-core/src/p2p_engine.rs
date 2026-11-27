@@ -1,9 +1,9 @@
 use crate::logger;
 use protocol::{
     AddrEchoReq, Candidate, CandidateKind, EchoMode, IpFamily, LatencyPoint, P2pDirectMsg,
-    P2pMsgKind, P2pReport, P2pVerdict, ProbeError, PunchStrategy, S2WireMessage,
-    MAX_PACKET_RATE_HZ, MAX_PUNCH_TIMEOUT_MS, MAX_UDP_PACKET_BYTES, MAX_WINDOW_SECS,
-    MIN_PACKET_RATE_HZ, MIN_PUNCH_TIMEOUT_MS, MIN_WINDOW_SECS,
+    P2pLatencyTier, P2pMsgKind, P2pReport, P2pStabilityGrade, P2pVerdict, ProbeError, PunchStrategy,
+    S2WireMessage, MAX_PACKET_RATE_HZ, MAX_PUNCH_TIMEOUT_MS, MAX_UDP_PACKET_BYTES,
+    MAX_WINDOW_SECS, MIN_PACKET_RATE_HZ, MIN_PUNCH_TIMEOUT_MS, MIN_WINDOW_SECS,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -1497,24 +1497,60 @@ struct SentRecord {
     rtt_ms: Option<f32>,
 }
 
-fn classify_verdict(
+const SPIKE_OFFSET_MS: f32 = 30.0;
+
+fn percentile_nearest_rank(sorted: &[f32], q: f64) -> f32 {
+    let idx = ((q * sorted.len() as f64).ceil() as usize)
+        .saturating_sub(1)
+        .min(sorted.len() - 1);
+    sorted[idx]
+}
+
+fn classify_latency_tier(avg_rtt_ms: Option<f32>) -> Option<P2pLatencyTier> {
+    let avg = avg_rtt_ms.filter(|v| v.is_finite())?;
+    Some(if avg < 30.0 {
+        P2pLatencyTier::UltraLow
+    } else if avg < 80.0 {
+        P2pLatencyTier::Low
+    } else if avg <= 150.0 {
+        P2pLatencyTier::Medium
+    } else {
+        P2pLatencyTier::High
+    })
+}
+
+fn classify_stability_grade(
     punched: bool,
     received: u32,
     loss_ratio: f32,
-    p95_rtt_ms: Option<f32>,
-    jitter_ms: Option<f32>,
-) -> P2pVerdict {
+    iqr_ms: Option<f32>,
+    tail_bloat_ms: Option<f32>,
+    spike_ratio: Option<f32>,
+) -> P2pStabilityGrade {
     if !punched || received == 0 {
-        return P2pVerdict::Failed;
+        return P2pStabilityGrade::Failed;
     }
-    let p95 = p95_rtt_ms.unwrap_or(f32::INFINITY);
-    let jitter = jitter_ms.unwrap_or(f32::INFINITY);
-    if loss_ratio <= 0.01 && p95 <= 60.0 && jitter <= 10.0 {
-        P2pVerdict::Excellent
-    } else if loss_ratio <= 0.03 && p95 <= 100.0 && jitter <= 25.0 {
-        P2pVerdict::Good
+    let iqr = iqr_ms.unwrap_or(f32::INFINITY);
+    let tail = tail_bloat_ms.unwrap_or(f32::INFINITY);
+    let spike = spike_ratio.unwrap_or(f32::INFINITY);
+
+    if loss_ratio == 0.0 && iqr <= 8.0 && tail <= 20.0 && spike <= 0.02 {
+        P2pStabilityGrade::RockSolid
+    } else if loss_ratio <= 0.01 && iqr <= 15.0 && tail <= 35.0 && spike <= 0.05 {
+        P2pStabilityGrade::Good
+    } else if loss_ratio <= 0.03 && iqr <= 25.0 && tail <= 60.0 && spike <= 0.12 {
+        P2pStabilityGrade::MildJitter
     } else {
-        P2pVerdict::Unstable
+        P2pStabilityGrade::SevereJitter
+    }
+}
+
+fn stability_to_verdict(grade: P2pStabilityGrade) -> P2pVerdict {
+    match grade {
+        P2pStabilityGrade::RockSolid => P2pVerdict::Excellent,
+        P2pStabilityGrade::Good | P2pStabilityGrade::MildJitter => P2pVerdict::Good,
+        P2pStabilityGrade::SevereJitter => P2pVerdict::Unstable,
+        P2pStabilityGrade::Failed => P2pVerdict::Failed,
     }
 }
 
@@ -1533,33 +1569,50 @@ fn summarize_report(
         sent.saturating_sub(received) as f32 / sent as f32
     };
 
-    let (avg_rtt_ms, p95_rtt_ms, jitter_ms) = if rtts.is_empty() {
-        (None, None, None)
-    } else {
-        let sum: f64 = rtts.iter().map(|&v| f64::from(v)).sum();
-        let avg = (sum / rtts.len() as f64) as f32;
-
-        let mut sorted = rtts.clone();
-        sorted.sort_by(|a, b| a.total_cmp(b));
-        let idx = ((0.95_f64 * sorted.len() as f64).ceil() as usize)
-            .saturating_sub(1)
-            .min(sorted.len() - 1);
-        let p95 = sorted[idx];
-
-        let jitter = if rtts.len() == 1 {
-            0.0
+    let (avg_rtt_ms, p50_rtt_ms, p95_rtt_ms, jitter_ms, iqr_ms, tail_bloat_ms, spike_ratio) =
+        if rtts.is_empty() {
+            (None, None, None, None, None, None, None)
         } else {
-            let diff_sum: f64 = rtts
-                .windows(2)
-                .map(|w| f64::from((w[1] - w[0]).abs()))
-                .sum();
-            (diff_sum / (rtts.len() - 1) as f64) as f32
+            let sum: f64 = rtts.iter().map(|&v| f64::from(v)).sum();
+            let avg = (sum / rtts.len() as f64) as f32;
+
+            let mut sorted = rtts.clone();
+            sorted.sort_by(|a, b| a.total_cmp(b));
+            let p25 = percentile_nearest_rank(&sorted, 0.25);
+            let p50 = percentile_nearest_rank(&sorted, 0.50);
+            let p75 = percentile_nearest_rank(&sorted, 0.75);
+            let p95 = percentile_nearest_rank(&sorted, 0.95);
+            let iqr = (p75 - p25).max(0.0);
+            let tail_bloat = (p95 - p50).max(0.0);
+            let spike_thresh = p50 + SPIKE_OFFSET_MS;
+            let spikes = rtts.iter().filter(|&&v| v > spike_thresh).count();
+            let spike = spikes as f32 / rtts.len() as f32;
+
+            let jitter = if rtts.len() == 1 {
+                0.0
+            } else {
+                let diff_sum: f64 = rtts
+                    .windows(2)
+                    .map(|w| f64::from((w[1] - w[0]).abs()))
+                    .sum();
+                (diff_sum / (rtts.len() - 1) as f64) as f32
+            };
+
+            (
+                Some(avg),
+                Some(p50),
+                Some(p95),
+                Some(jitter),
+                Some(iqr),
+                Some(tail_bloat),
+                Some(spike),
+            )
         };
 
-        (Some(avg), Some(p95), Some(jitter))
-    };
-
-    let verdict = classify_verdict(true, received, loss_ratio, p95_rtt_ms, jitter_ms);
+    let latency_tier = classify_latency_tier(avg_rtt_ms);
+    let stability_grade =
+        classify_stability_grade(true, received, loss_ratio, iqr_ms, tail_bloat_ms, spike_ratio);
+    let verdict = stability_to_verdict(stability_grade);
     let failure_reason = if received == 0 {
         Some("no_pong_received".to_string())
     } else {
@@ -1576,8 +1629,14 @@ fn summarize_report(
         received,
         loss_ratio,
         avg_rtt_ms,
+        p50_rtt_ms,
         p95_rtt_ms,
         jitter_ms,
+        iqr_ms,
+        tail_bloat_ms,
+        spike_ratio,
+        latency_tier,
+        stability_grade: Some(stability_grade),
         series,
         verdict,
         failure_reason,
@@ -1720,8 +1779,14 @@ where
             received: 0,
             loss_ratio: 1.0,
             avg_rtt_ms: None,
+            p50_rtt_ms: None,
             p95_rtt_ms: None,
             jitter_ms: None,
+            iqr_ms: None,
+            tail_bloat_ms: None,
+            spike_ratio: None,
+            latency_tier: None,
+            stability_grade: Some(P2pStabilityGrade::Failed),
             series: Vec::new(),
             verdict: P2pVerdict::Failed,
             failure_reason: Some("no_compatible_candidates".to_string()),
@@ -1929,8 +1994,14 @@ where
             received: 0,
             loss_ratio: 1.0,
             avg_rtt_ms: None,
+            p50_rtt_ms: None,
             p95_rtt_ms: None,
             jitter_ms: None,
+            iqr_ms: None,
+            tail_bloat_ms: None,
+            spike_ratio: None,
+            latency_tier: None,
+            stability_grade: Some(P2pStabilityGrade::Failed),
             series: Vec::new(),
             verdict: P2pVerdict::Failed,
             failure_reason: Some("punch_timeout".to_string()),
@@ -1991,12 +2062,13 @@ where
     // Phase C: Fixed-window latency sampling
     let total_packets = window_secs * packet_rate_hz;
     let interval = Duration::from_nanos(1_000_000_000 / u64::from(packet_rate_hz));
-    let grace = (interval * 2).min(Duration::from_millis(400));
     let sample_start = Instant::now();
     let mut records: Vec<SentRecord> = Vec::with_capacity(total_packets as usize);
     let mut next_seq: u32 = 1;
     let mut next_send_at = Some(sample_start);
     let mut grace_deadline: Option<Instant> = None;
+    let mut max_observed_rtt_ms: f32 = 0.0;
+    let mut received_count: u32 = 0;
     let mut recv_buf = [0u8; RECV_BUF_LEN];
 
     loop {
@@ -2039,11 +2111,18 @@ where
                                         if rec.rtt_ms.is_none() {
                                             let rtt_ms = (rec.sent_at.elapsed().as_secs_f64() * 1000.0) as f32;
                                             rec.rtt_ms = Some(rtt_ms);
+                                            received_count += 1;
+                                            if rtt_ms > max_observed_rtt_ms {
+                                                max_observed_rtt_ms = rtt_ms;
+                                            }
                                             on_event(P2pEvent::LatencyPoint(LatencyPoint {
                                                 seq: msg.seq,
                                                 elapsed_ms: rec.sent_offset_ms,
                                                 rtt_ms: Some(rtt_ms),
                                             }));
+                                            if next_send_at.is_none() && received_count >= total_packets {
+                                                break;
+                                            }
                                         }
                                     } else {
                                         logger::warn(
@@ -2087,6 +2166,14 @@ where
                     next_send_at = Some(sample_start + interval * (next_seq - 1));
                 } else {
                     next_send_at = None;
+                    if received_count >= total_packets {
+                        break;
+                    }
+                    let min_grace = (interval * 2).max(Duration::from_millis(400));
+                    let dynamic_grace = Duration::from_secs_f64(
+                        (f64::from(max_observed_rtt_ms) * 2.0 / 1000.0).clamp(0.4, 1.5),
+                    );
+                    let grace = min_grace.max(dynamic_grace).min(Duration::from_millis(1500));
                     grace_deadline = Some(Instant::now() + grace);
                 }
             }
@@ -2245,7 +2332,7 @@ mod tests {
 
     #[test]
     fn verdict_thresholds_and_stats_math() {
-        // Excellent: loss <= 1%, p95 <= 60ms, jitter <= 10ms
+        // RockSolid + UltraLow: loss == 0%, iqr <= 8ms, tail <= 20ms, spike <= 2%
         let excellent_series: Vec<LatencyPoint> = (1..=20)
             .map(|seq| LatencyPoint {
                 seq,
@@ -2261,50 +2348,78 @@ mod tests {
             excellent_series,
         );
         assert_eq!(rep.verdict, P2pVerdict::Excellent);
+        assert_eq!(rep.stability_grade, Some(P2pStabilityGrade::RockSolid));
+        assert_eq!(rep.latency_tier, Some(P2pLatencyTier::UltraLow));
         assert_eq!(rep.received, 20);
         assert_eq!(rep.loss_ratio, 0.0);
+        assert_eq!(rep.p50_rtt_ms, Some(15.0));
         assert_eq!(rep.p95_rtt_ms, Some(17.0));
+        assert_eq!(rep.iqr_ms, Some(2.0));
+        assert_eq!(rep.tail_bloat_ms, Some(2.0));
+        assert_eq!(rep.spike_ratio, Some(0.0));
         assert_eq!(rep.jitter_ms, Some(2.0));
 
-        // Good boundary via loss (2%), p95 (80ms), jitter (18ms)
+        // Latency tier boundaries (<30, 30-80, 80-150, >150)
+        assert_eq!(classify_latency_tier(None), None);
+        assert_eq!(classify_latency_tier(Some(29.9)), Some(P2pLatencyTier::UltraLow));
+        assert_eq!(classify_latency_tier(Some(30.0)), Some(P2pLatencyTier::Low));
+        assert_eq!(classify_latency_tier(Some(79.9)), Some(P2pLatencyTier::Low));
+        assert_eq!(classify_latency_tier(Some(80.0)), Some(P2pLatencyTier::Medium));
+        assert_eq!(classify_latency_tier(Some(150.0)), Some(P2pLatencyTier::Medium));
+        assert_eq!(classify_latency_tier(Some(150.1)), Some(P2pLatencyTier::High));
+
+        // Cross-ocean high-RTT steady link stays RockSolid
         assert_eq!(
-            classify_verdict(true, 98, 0.02, Some(80.0), Some(18.0)),
-            P2pVerdict::Good
+            classify_stability_grade(true, 200, 0.0, Some(3.0), Some(5.0), Some(0.0)),
+            P2pStabilityGrade::RockSolid
         );
-        // Exact Excellent edge
+        // Exact RockSolid edge
         assert_eq!(
-            classify_verdict(true, 99, 0.01, Some(60.0), Some(10.0)),
-            P2pVerdict::Excellent
+            classify_stability_grade(true, 200, 0.0, Some(8.0), Some(20.0), Some(0.02)),
+            P2pStabilityGrade::RockSolid
         );
-        // Exact Good edge
+        // Good edge
         assert_eq!(
-            classify_verdict(true, 97, 0.03, Some(100.0), Some(25.0)),
-            P2pVerdict::Good
+            classify_stability_grade(true, 99, 0.01, Some(15.0), Some(35.0), Some(0.05)),
+            P2pStabilityGrade::Good
         );
-        // Unstable cases
+        // MildJitter edge (e.g. mobile wireless round 1: 0% loss, iqr=12.6, tail=48.8, spike=10%)
         assert_eq!(
-            classify_verdict(true, 96, 0.04, Some(20.0), Some(5.0)),
-            P2pVerdict::Unstable
-        );
-        assert_eq!(
-            classify_verdict(true, 100, 0.0, Some(100.1), Some(5.0)),
-            P2pVerdict::Unstable
+            classify_stability_grade(true, 200, 0.0, Some(12.64), Some(48.79), Some(0.10)),
+            P2pStabilityGrade::MildJitter
         );
         assert_eq!(
-            classify_verdict(true, 100, 0.0, Some(20.0), Some(25.1)),
-            P2pVerdict::Unstable
+            classify_stability_grade(true, 97, 0.03, Some(25.0), Some(60.0), Some(0.12)),
+            P2pStabilityGrade::MildJitter
+        );
+        // SevereJitter cases
+        assert_eq!(
+            classify_stability_grade(true, 96, 0.04, Some(5.0), Some(10.0), Some(0.0)),
+            P2pStabilityGrade::SevereJitter
+        );
+        assert_eq!(
+            classify_stability_grade(true, 100, 0.0, Some(25.1), Some(10.0), Some(0.0)),
+            P2pStabilityGrade::SevereJitter
+        );
+        assert_eq!(
+            classify_stability_grade(true, 100, 0.0, Some(10.0), Some(60.1), Some(0.0)),
+            P2pStabilityGrade::SevereJitter
+        );
+        assert_eq!(
+            classify_stability_grade(true, 100, 0.0, Some(10.0), Some(10.0), Some(0.121)),
+            P2pStabilityGrade::SevereJitter
         );
         // Failed cases
         assert_eq!(
-            classify_verdict(true, 0, 1.0, None, None),
-            P2pVerdict::Failed
+            classify_stability_grade(true, 0, 1.0, None, None, None),
+            P2pStabilityGrade::Failed
         );
         assert_eq!(
-            classify_verdict(false, 5, 0.0, Some(10.0), Some(1.0)),
-            P2pVerdict::Failed
+            classify_stability_grade(false, 5, 0.0, Some(1.0), Some(1.0), Some(0.0)),
+            P2pStabilityGrade::Failed
         );
 
-        // Single sample jitter is 0.0 and p95 = sample
+        // Single sample jitter/iqr/tail/spike = 0.0, avg/p50/p95 = sample
         let single = summarize_report(
             "127.0.0.1:40000".parse().unwrap(),
             IpFamily::Ipv4,
@@ -2317,8 +2432,14 @@ mod tests {
             }],
         );
         assert_eq!(single.jitter_ms, Some(0.0));
+        assert_eq!(single.p50_rtt_ms, Some(42.5));
         assert_eq!(single.p95_rtt_ms, Some(42.5));
         assert_eq!(single.avg_rtt_ms, Some(42.5));
+        assert_eq!(single.iqr_ms, Some(0.0));
+        assert_eq!(single.tail_bloat_ms, Some(0.0));
+        assert_eq!(single.spike_ratio, Some(0.0));
+        assert_eq!(single.latency_tier, Some(P2pLatencyTier::Low));
+        assert_eq!(single.stability_grade, Some(P2pStabilityGrade::RockSolid));
         assert_eq!(single.verdict, P2pVerdict::Excellent);
     }
 

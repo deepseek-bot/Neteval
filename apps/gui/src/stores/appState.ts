@@ -614,11 +614,7 @@ export async function runP2pTest(): Promise<void> {
     return;
   }
 
-  const p1 = Number(appStore.serverForm.probe_p1_port);
-  if (!Number.isInteger(p1) || p1 < 1 || p1 > 65535) {
-    appStore.errorNotice = 'UDP 探测主端口需为 1~65535 的整数';
-    return;
-  }
+  const p1 = DEFAULT_PROBE_PORT_P1;
 
   const roomErr = validateRoomCode(appStore.p2pForm.room_code.trim());
   if (roomErr) {
@@ -693,23 +689,8 @@ export async function runNatTest(): Promise<void> {
       return;
     }
 
-    const p1 = Number(appStore.serverForm.probe_p1_port);
-    const p2 = Number(appStore.serverForm.probe_p2_port);
-    if (
-      !Number.isInteger(p1) ||
-      p1 < 1 ||
-      p1 > 65535 ||
-      !Number.isInteger(p2) ||
-      p2 < 1 ||
-      p2 > 65535
-    ) {
-      appStore.errorNotice = 'UDP 探测端口需为 1~65535 的整数';
-      return;
-    }
-    if (p1 === p2) {
-      appStore.errorNotice = 'UDP 探测主端口与副端口不能相同';
-      return;
-    }
+    const p1 = DEFAULT_PROBE_PORT_P1;
+    const p2 = DEFAULT_PROBE_PORT_P2;
 
     const ep1 = formatHostPort(host, p1);
     const ep2 = formatHostPort(host, p2);
@@ -723,7 +704,6 @@ export async function runNatTest(): Promise<void> {
       primary_v4_p2 = null;
     }
 
-    helper_v4_p1 = opt(appStore.serverForm.helper_v4_p1);
     token = opt(appStore.serverForm.token);
   }
 

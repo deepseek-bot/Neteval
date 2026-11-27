@@ -13,8 +13,8 @@ import { SIGNALING_PROTOCOLS } from '../types/protocol';
 import {
   formatLossPct,
   formatMs,
+  formatP2pHeadline,
   formatStageLabel,
-  formatVerdict,
   generateRoomCode,
   validateRoomCode,
   validateServerConfig,
@@ -88,7 +88,7 @@ const roomValidationError = computed(() => {
 
 const latestVerdict = computed(() => {
   const p2p = appStore.latestP2pReport?.p2p_report;
-  return p2p ? formatVerdict(p2p.verdict) : null;
+  return p2p ? formatP2pHeadline(p2p) : null;
 });
 
 function onRandomRoom(): void {

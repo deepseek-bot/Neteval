@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.3.3] - 2026-11-27
+
+### Added
+- **Dual-Dimension P2P Link Quality Assessment (`crates/protocol`, `client-core`, `cli`, `apps/gui`)**: Split P2P link evaluation into an average-RTT latency tier (`UltraLow` `<30ms`, `Low` `30–80ms`, `Medium` `80–150ms`, `High` `>150ms`) and a 4-tier stability grade (`RockSolid`, `Good`, `MildJitter`, `SevereJitter`, plus `Failed`) backed by `p50_rtt_ms`, `iqr_ms` (`P75 - P25`), `tail_bloat_ms` (`P95 - P50`), and `spike_ratio` (`RTT > P50 + 30ms`), displayed in CLI output and GUI `ResultModal` / `P2pView`.
+
+### Changed
+- **Simplified Self-Hosted Server UI (`apps/gui/src/components/AdvancedSettingsPanel.vue`, `appState.ts`)**: Removed UDP probe port (`34778`/`34779`) and helper node inputs from Advanced Settings so clients only configure server domain/IP (+ optional token, and signaling protocol/port for P2P) while keeping probe ports as internal defaults.
+
+### Fixed
+- **Cross-Ocean Tail Packet Loss (`crates/client-core/src/p2p_engine.rs`)**: Replaced the fixed 200ms tail grace timeout at 10 Hz in Phase C sampling with a dynamic grace deadline scaled from observed max RTT (`clamp(400ms, 2 * max_rtt, 1500ms)`) with early exit once all packets return.
+
 ## [1.3.2] - 2026-11-27
 
 ### Changed

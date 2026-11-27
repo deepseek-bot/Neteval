@@ -335,8 +335,8 @@ fn cleanup_tmp(tmp_path: &Path) {
 mod tests {
     use super::*;
     use protocol::{
-        IpFamily, LatencyPoint, NatFiltering, NatMapping, NatReport, NatStatus, P2pReport,
-        P2pVerdict,
+        IpFamily, LatencyPoint, NatFiltering, NatMapping, NatReport, NatStatus, P2pLatencyTier,
+        P2pReport, P2pStabilityGrade, P2pVerdict,
     };
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -504,8 +504,14 @@ mod tests {
                 received: 5,
                 loss_ratio: 0.0,
                 avg_rtt_ms: Some(1.5),
+                p50_rtt_ms: Some(1.5),
                 p95_rtt_ms: Some(2.0),
                 jitter_ms: Some(0.2),
+                iqr_ms: Some(0.0),
+                tail_bloat_ms: Some(0.5),
+                spike_ratio: Some(0.0),
+                latency_tier: Some(P2pLatencyTier::UltraLow),
+                stability_grade: Some(P2pStabilityGrade::RockSolid),
                 series: vec![LatencyPoint {
                     seq: 1,
                     elapsed_ms: 10,
