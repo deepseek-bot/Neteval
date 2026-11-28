@@ -301,6 +301,22 @@ try {
         Assert-True ($LASTEXITCODE -eq 0) "cli-p2p-history-list-exit" "0" "$LASTEXITCODE"
         $p2pHistJson = ($p2pHistRaw -join "`n") | ConvertFrom-Json
         Assert-True ($p2pHistJson.Count -eq 1 -and $p2pHistJson[0].has_p2p -eq $true) "cli-p2p-history-saved" "count=1,has_p2p=True" "count=$($p2pHistJson.Count)"
+
+        # 5. Direct link probe CLI run against a local TCP listener
+        $linkListener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+        $linkListener.Start()
+        $linkPort = ([System.Net.IPEndPoint]$linkListener.LocalEndpoint).Port
+        try {
+            $linkOutRaw = & $cliBin --data-dir $e2eDataDir --log-file $latestLog --json link --target "local-tcp=127.0.0.1:$linkPort" --attempts 2 --timeout-ms 1000
+            Assert-True ($LASTEXITCODE -eq 0) "cli-link-exit" "exit=0" "exit=$LASTEXITCODE"
+            $linkJson = ($linkOutRaw -join "`n") | ConvertFrom-Json
+            Assert-True ($linkJson.link_reports.Count -eq 1) "cli-link-count" "1" "$($linkJson.link_reports.Count)"
+            Assert-True ($linkJson.link_reports[0].reachable -eq $true) "cli-link-reachable" "True" "$($linkJson.link_reports[0].reachable)"
+            Assert-True ($linkJson.link_reports[0].received -eq 2) "cli-link-received" "2" "$($linkJson.link_reports[0].received)"
+        }
+        finally {
+            $linkListener.Stop()
+        }
     }
     finally {
         foreach ($proc in @($peerAProc, $peerBProc, $primaryProc, $helperProc)) {

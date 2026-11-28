@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   AssessmentReport,
   AssessmentState,
+  LinkTaskInput,
   NatTaskInput,
   P2pTaskInput,
   ProbeError,
@@ -16,6 +17,10 @@ export function startNatAssessment(input: NatTaskInput): Promise<string> {
 
 export function startP2pAssessment(input: P2pTaskInput): Promise<string> {
   return invoke<string>('start_p2p_assessment', { input });
+}
+
+export function startLinkAssessment(input: LinkTaskInput): Promise<string> {
+  return invoke<string>('start_link_assessment', { input });
 }
 
 export function cancelCurrent(reason: string | null = null): Promise<void> {

@@ -46,6 +46,23 @@ onMounted(() => {
             >
               P2P{{ item.p2p_verdict ? ` · ${formatVerdict(item.p2p_verdict).label}` : '' }}
             </span>
+            <span
+              v-if="item.has_link"
+              class="tag"
+              :class="
+                item.link_target_count
+                  ? item.link_reachable_count
+                    ? 'tone-excellent'
+                    : 'tone-failed'
+                  : ''
+              "
+            >
+              链路{{
+                item.link_target_count !== undefined && item.link_target_count !== null
+                  ? ` · ${item.link_reachable_count ?? 0}/${item.link_target_count} 可达`
+                  : ''
+              }}
+            </span>
           </div>
         </div>
 

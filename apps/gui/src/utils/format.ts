@@ -1,4 +1,5 @@
 import type {
+  LinkProtocol,
   NatFiltering,
   NatMapping,
   NatStatus,
@@ -13,6 +14,7 @@ import type {
 
 const STAGE_LABELS: Record<string, string> = {
   probing_nat: '正在探测公网映射与 NAT 过滤行为',
+  probing_links: '正在直连探测目标节点',
   preparing_candidates: '正在采集本机网络与公网候选地址',
   connecting_signaling: '正在连接信令节点',
   reconnecting_signaling: '信令服务器不可达，正在自动重试',
@@ -398,6 +400,13 @@ export function formatPunchStrategy(strategy: PunchStrategy): string {
     case 'ipv6_only':
       return '仅 IPv6';
   }
+}
+
+export function formatLinkProtocol(protocol: LinkProtocol): string {
+  if (protocol === 'tcp') {
+    return 'TCP';
+  }
+  return `TLS+SNI (${protocol.tls_sni.sni})`;
 }
 
 export interface FormattedNatNote {

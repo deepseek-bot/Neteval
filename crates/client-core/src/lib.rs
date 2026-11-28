@@ -1,3 +1,4 @@
+pub mod link_prober;
 pub mod local_store;
 pub mod logger;
 pub mod nat_prober;

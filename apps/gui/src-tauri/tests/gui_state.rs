@@ -7,10 +7,11 @@ use std::time::Duration;
 use client_core::orchestrator::Orchestrator;
 use neteval_gui_lib::GuiState;
 use protocol::{
-    AddrEchoResp, AssessmentState, EchoMode, IpFamily, LatencyPoint, LivePeerInfo, NatFiltering,
-    NatMapping, NatStatus, NatTaskInput, P2pTaskInput, ProbeError, S2WireMessage,
+    AddrEchoResp, AssessmentState, EchoMode, IpFamily, LatencyPoint, LinkProtocol, LinkTarget,
+    LinkTaskInput, LivePeerInfo, NatFiltering, NatMapping, NatStatus, NatTaskInput, P2pTaskInput,
+    ProbeError, S2WireMessage,
 };
-use tokio::net::UdpSocket;
+use tokio::net::{TcpListener, UdpSocket};
 
 static TEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -203,6 +204,69 @@ async fn gui_state_runs_nat_assessment_end_to_end_and_persists_report() {
     let history = gui.history().expect("list history");
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].report_id, report.report_id);
+
+    let loaded = gui.report(&report.report_id).expect("load persisted report");
+    assert_eq!(loaded.report_id, report.report_id);
+
+    gui.remove_report(&report.report_id).expect("delete persisted report");
+    assert!(gui.history().expect("list after delete").is_empty());
+}
+
+#[tokio::test]
+async fn gui_state_runs_link_assessment_end_to_end_and_persists_report() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let srv = tokio::spawn(async move {
+        while let Ok((_s, _)) = listener.accept().await {}
+    });
+
+    let tmp = TempDir::new("e2e_link");
+    let gui = GuiState::new(Orchestrator::new(&tmp.0));
+
+    let task_id = gui
+        .start_link(LinkTaskInput {
+            targets: vec![LinkTarget {
+                label: "loopback".into(),
+                host_ip: addr.ip().to_string(),
+                port: addr.port(),
+                protocol: LinkProtocol::Tcp,
+            }],
+            attempts_per_target: 2,
+            timeout_ms: 1000,
+            max_concurrency: 1,
+        })
+        .await
+        .expect("start_link should succeed");
+    assert!(task_id.starts_with("link_"));
+
+    let report = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match gui.current_state() {
+                AssessmentState::Completed(rep) => return rep,
+                AssessmentState::Failed(err) => panic!("Link task failed unexpectedly: {err:?}"),
+                AssessmentState::Cancelled { reason } => panic!("Link task cancelled: {reason:?}"),
+                AssessmentState::Idle | AssessmentState::Running { .. } => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("Link task timed out; last_state={:?}", gui.current_state()));
+
+    srv.abort();
+
+    let links = report.link_reports.as_ref().expect("link_reports missing");
+    assert_eq!(links.len(), 1);
+    assert!(links[0].reachable);
+    assert_eq!(links[0].received, 2);
+
+    let history = gui.history().expect("list history");
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].report_id, report.report_id);
+    assert!(history[0].has_link);
+    assert_eq!(history[0].link_target_count, Some(1));
+    assert_eq!(history[0].link_reachable_count, Some(1));
 
     let loaded = gui.report(&report.report_id).expect("load persisted report");
     assert_eq!(loaded.report_id, report.report_id);

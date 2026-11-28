@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -5,10 +6,11 @@ use clap::{Args, Parser, Subcommand};
 use client_core::logger;
 use client_core::orchestrator::Orchestrator;
 use protocol::{
-    AssessmentReport, AssessmentState, DEFAULT_PACKET_RATE_HZ, DEFAULT_PUBLIC_STUN_SERVERS,
-    DEFAULT_PUNCH_TIMEOUT_MS, DEFAULT_WINDOW_SECS, IpFamily, NatFiltering, NatMapping, NatStatus,
-    NatTaskInput, P2pLatencyTier, P2pStabilityGrade, P2pTaskInput, P2pVerdict, ProbeError,
-    PunchStrategy, ROOM_WAIT_TTL_SECS,
+    AssessmentReport, AssessmentState, DEFAULT_LINK_ATTEMPTS, DEFAULT_LINK_CONCURRENCY,
+    DEFAULT_LINK_TIMEOUT_MS, DEFAULT_PACKET_RATE_HZ, DEFAULT_PUBLIC_STUN_SERVERS,
+    DEFAULT_PUNCH_TIMEOUT_MS, DEFAULT_WINDOW_SECS, IpFamily, LinkProtocol, LinkTarget,
+    LinkTaskInput, NatFiltering, NatMapping, NatStatus, NatTaskInput, P2pLatencyTier,
+    P2pStabilityGrade, P2pTaskInput, P2pVerdict, ProbeError, PunchStrategy, ROOM_WAIT_TTL_SECS,
 };
 
 #[derive(Debug, Parser)]
@@ -36,6 +38,8 @@ enum Commands {
     Nat(NatArgs),
     /// Run dual-peer P2P hole-punching and latency curve probe via S1 signaling server
     P2p(P2pArgs),
+    /// Run direct TCP / TLS+SNI link probe against explicit IP targets (bypasses system DNS)
+    Link(LinkArgs),
     /// Manage saved local assessment reports
     History(HistoryArgs),
 }
@@ -152,6 +156,25 @@ struct NatArgs {
 }
 
 #[derive(Debug, Args)]
+struct LinkArgs {
+    /// Target endpoint spec: [LABEL=]IP:PORT[@SNI] (repeatable, e.g. CF=1.1.1.1:443@cloudflare.com)
+    #[arg(long = "target", required = true)]
+    targets: Vec<String>,
+
+    /// Number of connection attempts per target (1..=20)
+    #[arg(long, default_value_t = DEFAULT_LINK_ATTEMPTS)]
+    attempts: u32,
+
+    /// Per-attempt connect/TLS timeout in milliseconds (500..=15000)
+    #[arg(long, default_value_t = DEFAULT_LINK_TIMEOUT_MS)]
+    timeout_ms: u64,
+
+    /// Maximum concurrent target probes (1..=5)
+    #[arg(long, default_value_t = DEFAULT_LINK_CONCURRENCY)]
+    concurrency: u32,
+}
+
+#[derive(Debug, Args)]
 struct HistoryArgs {
     #[command(subcommand)]
     action: HistoryAction,
@@ -205,6 +228,7 @@ async fn main() -> ExitCode {
     match cli.command {
         Commands::Nat(args) => run_nat_command(orchestrator, args, cli.json).await,
         Commands::P2p(args) => run_p2p_command(orchestrator, args, cli.json).await,
+        Commands::Link(args) => run_link_command(orchestrator, args, cli.json).await,
         Commands::History(args) => run_history_command(orchestrator, args, cli.json),
     }
 }
@@ -268,6 +292,88 @@ async fn run_p2p_command(orchestrator: Orchestrator, args: P2pArgs, json: bool) 
     let mut rx = orchestrator.subscribe();
     if let Err(err) = orchestrator.start_p2p_assessment(input).await {
         logger::error("cli", format!("failed to start P2P assessment: {err}"));
+        print_error(&err, json);
+        return ExitCode::FAILURE;
+    }
+
+    observe_assessment(&orchestrator, &mut rx, json).await
+}
+
+fn parse_link_target_spec(spec: &str) -> Result<LinkTarget, ProbeError> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return Err(ProbeError::InvalidInput("empty --target spec".into()));
+    }
+
+    let (custom_label, addr_part) = match trimmed.split_once('=') {
+        Some((lbl, rest)) => {
+            let lbl = lbl.trim();
+            if lbl.is_empty() {
+                return Err(ProbeError::InvalidInput(format!(
+                    "empty label in --target {spec:?}"
+                )));
+            }
+            (Some(lbl.to_string()), rest.trim())
+        }
+        None => (None, trimmed),
+    };
+
+    let (endpoint, protocol) = match addr_part.split_once('@') {
+        Some((ep, sni)) => {
+            let sni = sni.trim();
+            if sni.is_empty() {
+                return Err(ProbeError::InvalidInput(format!(
+                    "empty SNI after '@' in --target {spec:?}"
+                )));
+            }
+            (
+                ep.trim(),
+                LinkProtocol::TlsSni {
+                    sni: sni.to_string(),
+                },
+            )
+        }
+        None => (addr_part, LinkProtocol::Tcp),
+    };
+
+    let socket_addr: SocketAddr = endpoint.parse().map_err(|err| {
+        ProbeError::InvalidInput(format!(
+            "invalid target endpoint {endpoint:?} (must be IPv4:PORT or [IPv6]:PORT): {err}"
+        ))
+    })?;
+
+    let label = custom_label.unwrap_or_else(|| endpoint.to_string());
+    Ok(LinkTarget {
+        label,
+        host_ip: socket_addr.ip().to_string(),
+        port: socket_addr.port(),
+        protocol,
+    })
+}
+
+async fn run_link_command(orchestrator: Orchestrator, args: LinkArgs, json: bool) -> ExitCode {
+    let mut parsed_targets = Vec::with_capacity(args.targets.len());
+    for raw in &args.targets {
+        match parse_link_target_spec(raw) {
+            Ok(t) => parsed_targets.push(t),
+            Err(err) => {
+                logger::error("cli", format!("invalid --target {raw:?}: {err}"));
+                print_error(&err, json);
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    let input = LinkTaskInput {
+        targets: parsed_targets,
+        attempts_per_target: args.attempts,
+        timeout_ms: args.timeout_ms,
+        max_concurrency: args.concurrency,
+    };
+
+    let mut rx = orchestrator.subscribe();
+    if let Err(err) = orchestrator.start_link_assessment(input).await {
+        logger::error("cli", format!("failed to start link assessment: {err}"));
         print_error(&err, json);
         return ExitCode::FAILURE;
     }
@@ -373,9 +479,18 @@ fn run_history_command(orchestrator: Orchestrator, args: HistoryArgs, json: bool
                             .p2p_verdict
                             .map(format_p2p_verdict)
                             .unwrap_or("none");
+                        let link_summary = match (item.link_reachable_count, item.link_target_count)
+                        {
+                            (Some(ok), Some(total)) => format!("{ok}/{total}"),
+                            _ => "none".to_string(),
+                        };
                         println!(
-                            "{}  created_unix_ms={}  nat_status={}  p2p_verdict={}",
-                            item.report_id, item.created_unix_ms, nat_status, p2p_verdict
+                            "{}  created_unix_ms={}  nat_status={}  p2p_verdict={}  link={}",
+                            item.report_id,
+                            item.created_unix_ms,
+                            nat_status,
+                            p2p_verdict,
+                            link_summary
                         );
                     }
                 }
@@ -536,6 +651,46 @@ fn print_report(report: &AssessmentReport, json: bool) {
             println!("Interrupted   : {reason}");
         }
     }
+    if let Some(links) = &report.link_reports {
+        println!("Link Targets  : {}", links.len());
+        for t in links {
+            let proto = match &t.protocol {
+                LinkProtocol::Tcp => "tcp".to_string(),
+                LinkProtocol::TlsSni { sni } => format!("tls_sni({sni})"),
+            };
+            let avg = t
+                .avg_rtt_ms
+                .map(|v| format!("{v:.2}ms"))
+                .unwrap_or_else(|| "-".into());
+            let min = t
+                .min_rtt_ms
+                .map(|v| format!("{v:.2}ms"))
+                .unwrap_or_else(|| "-".into());
+            let max = t
+                .max_rtt_ms
+                .map(|v| format!("{v:.2}ms"))
+                .unwrap_or_else(|| "-".into());
+            println!(
+                "  - {} ({}:{}, {}) reachable={} ok={}/{} loss={:.1}% avg={} min={} max={}",
+                t.label,
+                t.host_ip,
+                t.port,
+                proto,
+                t.reachable,
+                t.received,
+                t.sent,
+                t.loss_ratio * 100.0,
+                avg,
+                min,
+                max
+            );
+            for s in &t.samples {
+                if let Some(err) = &s.error {
+                    println!("      #{} error={err}", s.seq);
+                }
+            }
+        }
+    }
 }
 
 fn format_ip_family(f: IpFamily) -> &'static str {
@@ -610,5 +765,39 @@ fn format_filtering(f: NatFiltering) -> &'static str {
         NatFiltering::ConeNat1OrNat2 => "cone_nat1_or_nat2",
         NatFiltering::NotTestedPublicStun => "not_tested_public_stun",
         NatFiltering::Unknown => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_link_target_spec_handles_tcp_tls_label_and_ipv6() {
+        let tcp = parse_link_target_spec("127.0.0.1:8080").unwrap();
+        assert_eq!(tcp.label, "127.0.0.1:8080");
+        assert_eq!(tcp.host_ip, "127.0.0.1");
+        assert_eq!(tcp.port, 8080);
+        assert_eq!(tcp.protocol, LinkProtocol::Tcp);
+
+        let tls = parse_link_target_spec("CF-1.1.1.1=1.1.1.1:443@cloudflare.com").unwrap();
+        assert_eq!(tls.label, "CF-1.1.1.1");
+        assert_eq!(tls.host_ip, "1.1.1.1");
+        assert_eq!(tls.port, 443);
+        assert_eq!(
+            tls.protocol,
+            LinkProtocol::TlsSni {
+                sni: "cloudflare.com".into()
+            }
+        );
+
+        let v6 = parse_link_target_spec("CF-v6=[2606:4700:4700::1111]:443@cloudflare.com").unwrap();
+        assert_eq!(v6.label, "CF-v6");
+        assert_eq!(v6.host_ip, "2606:4700:4700::1111");
+        assert_eq!(v6.port, 443);
+
+        assert!(parse_link_target_spec("cloudflare.com:443").is_err());
+        assert!(parse_link_target_spec("=1.1.1.1:443").is_err());
+        assert!(parse_link_target_spec("1.1.1.1:443@").is_err());
     }
 }

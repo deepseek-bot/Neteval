@@ -150,14 +150,26 @@ impl LocalStore {
             }
 
             match read_report_from_path(&path) {
-                Ok(report) => summaries.push(ReportSummary {
-                    report_id: report.report_id,
-                    created_unix_ms: report.created_unix_ms,
-                    has_nat: report.nat_report.is_some(),
-                    nat_status: report.nat_report.as_ref().map(|n| n.status),
-                    has_p2p: report.p2p_report.is_some(),
-                    p2p_verdict: report.p2p_report.as_ref().map(|p| p.verdict),
-                }),
+                Ok(report) => {
+                    let link_target_count = report
+                        .link_reports
+                        .as_ref()
+                        .map(|list| list.len() as u32);
+                    let link_reachable_count = report.link_reports.as_ref().map(|list| {
+                        list.iter().filter(|item| item.reachable).count() as u32
+                    });
+                    summaries.push(ReportSummary {
+                        report_id: report.report_id,
+                        created_unix_ms: report.created_unix_ms,
+                        has_nat: report.nat_report.is_some(),
+                        nat_status: report.nat_report.as_ref().map(|n| n.status),
+                        has_p2p: report.p2p_report.is_some(),
+                        p2p_verdict: report.p2p_report.as_ref().map(|p| p.verdict),
+                        has_link: report.link_reports.is_some(),
+                        link_target_count,
+                        link_reachable_count,
+                    });
+                }
                 Err(err) => {
                     warn(
                         LOG_MODULE,
@@ -385,6 +397,7 @@ mod tests {
                 notes: vec!["ok".to_string()],
             }),
             p2p_report: None,
+            link_reports: None,
             storage_warning: None,
         }
     }
@@ -465,6 +478,9 @@ mod tests {
                     nat_status: Some(NatStatus::PublicStunOnly),
                     has_p2p: false,
                     p2p_verdict: None,
+                    has_link: false,
+                    link_target_count: None,
+                    link_reachable_count: None,
                 },
                 ReportSummary {
                     report_id: "r-a".to_string(),
@@ -473,6 +489,9 @@ mod tests {
                     nat_status: Some(NatStatus::CompleteFull),
                     has_p2p: false,
                     p2p_verdict: None,
+                    has_link: false,
+                    link_target_count: None,
+                    link_reachable_count: None,
                 },
                 ReportSummary {
                     report_id: "r-b".to_string(),
@@ -481,6 +500,9 @@ mod tests {
                     nat_status: None,
                     has_p2p: false,
                     p2p_verdict: None,
+                    has_link: false,
+                    link_target_count: None,
+                    link_reachable_count: None,
                 },
             ]
         );
@@ -521,6 +543,7 @@ mod tests {
                 failure_reason: None,
                 interrupted_reason: None,
             }),
+            link_reports: None,
             storage_warning: None,
         };
         store.save_report(&report).expect("save p2p");

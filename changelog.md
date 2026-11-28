@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.0] - 2026-11-28
+
+### Added
+- **Direct Link Prober (`C5` `crates/client-core/src/link_prober.rs`, `crates/protocol`, `orchestrator`, `local_store`)**: Added stateless TCP and raw TLS 1.2/1.3 `ClientHello`+SNI direct probing on explicit IPv4/IPv6 literals (bypassing system DNS and avoiding ICMP/admin privileges) with bounded concurrency (`1..=5`), per-target loss and min/avg/max RTT reporting, and backward-compatible `link_reports` / `ReportSummary` fields.
+- **CLI `link` Subcommand (`crates/cli/src/main.rs`)**: Added `neteval-cli link --target "[LABEL=]IP:PORT[@SNI]"` supporting multiple TCP/TLS+SNI targets, `--attempts`, `--timeout-ms`, `--concurrency`, `--json`, and `history` rendering.
+- **GUI Direct Link Tab & History Integration (`apps/gui`)**: Added `start_link_assessment` Tauri command, `LinkView.vue` target editor and live results view, Cloudflare default presets, and `HistoryView.vue` / `ResultModal.vue` link report display.
+
+### Fixed
+- **P2P Phase C Trailing-Ping Responder Linger (`crates/client-core/src/p2p_engine.rs`)**: Retained the active UDP socket for a brief `250ms..=500ms` linger window after a peer finishes receiving all of its own `Pong` replies, preventing the faster peer from closing its socket before answering the slower peer's trailing `Ping` packets.
+
 ## [1.3.5] - 2026-11-28
 
 ### Added

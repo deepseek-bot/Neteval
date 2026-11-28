@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use client_core::logger;
 use client_core::orchestrator::Orchestrator;
 use protocol::{
-    AssessmentReport, AssessmentState, NatTaskInput, P2pTaskInput, ProbeError, ReportSummary,
+    AssessmentReport, AssessmentState, LinkTaskInput, NatTaskInput, P2pTaskInput, ProbeError,
+    ReportSummary,
 };
 use tauri::{Emitter, Manager};
 
@@ -22,6 +23,10 @@ impl GuiState {
 
     pub async fn start_p2p(&self, input: P2pTaskInput) -> Result<String, ProbeError> {
         self.orchestrator.start_p2p_assessment(input).await
+    }
+
+    pub async fn start_link(&self, input: LinkTaskInput) -> Result<String, ProbeError> {
+        self.orchestrator.start_link_assessment(input).await
     }
 
     pub async fn cancel(&self, reason: Option<String>) -> Result<(), ProbeError> {
@@ -59,6 +64,14 @@ async fn start_p2p_assessment(
     input: P2pTaskInput,
 ) -> Result<String, ProbeError> {
     state.start_p2p(input).await
+}
+
+#[tauri::command]
+async fn start_link_assessment(
+    state: tauri::State<'_, GuiState>,
+    input: LinkTaskInput,
+) -> Result<String, ProbeError> {
+    state.start_link(input).await
 }
 
 #[tauri::command]
@@ -169,6 +182,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_nat_assessment,
             start_p2p_assessment,
+            start_link_assessment,
             cancel_current,
             list_history,
             get_report,

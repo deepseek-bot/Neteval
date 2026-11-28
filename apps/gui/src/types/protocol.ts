@@ -138,11 +138,50 @@ export interface P2pReport {
   interrupted_reason: string | null;
 }
 
+export type LinkProtocol = 'tcp' | { tls_sni: { sni: string } };
+
+export interface LinkTarget {
+  label: string;
+  host_ip: string;
+  port: number;
+  protocol: LinkProtocol;
+}
+
+export interface LinkTaskInput {
+  targets: LinkTarget[];
+  attempts_per_target: number;
+  timeout_ms: number;
+  max_concurrency: number;
+}
+
+export interface LinkSample {
+  seq: number;
+  rtt_ms: number | null;
+  tcp_rtt_ms?: number | null;
+  error?: string | null;
+}
+
+export interface LinkTargetReport {
+  label: string;
+  host_ip: string;
+  port: number;
+  protocol: LinkProtocol;
+  reachable: boolean;
+  sent: number;
+  received: number;
+  loss_ratio: number;
+  avg_rtt_ms: number | null;
+  min_rtt_ms: number | null;
+  max_rtt_ms: number | null;
+  samples: LinkSample[];
+}
+
 export interface AssessmentReport {
   report_id: string;
   created_unix_ms: number;
   nat_report: NatReport | null;
   p2p_report: P2pReport | null;
+  link_reports?: LinkTargetReport[] | null;
   storage_warning: string | null;
 }
 
@@ -153,6 +192,9 @@ export interface ReportSummary {
   nat_status: NatStatus | null;
   has_p2p: boolean;
   p2p_verdict: P2pVerdict | null;
+  has_link?: boolean;
+  link_target_count?: number | null;
+  link_reachable_count?: number | null;
 }
 
 export interface RunningState {
