@@ -2,6 +2,7 @@
 logs/
 .agent-backup/
 Cargo.lock
+*.drawio
 .$*.drawio.bkp
 apps/gui/node_modules/
 apps/gui/dist/
