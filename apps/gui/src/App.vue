@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted } from 'vue';
 import AdvancedSettingsPanel from './components/AdvancedSettingsPanel.vue';
 import HistoryView from './components/HistoryView.vue';
+import LinkView from './components/LinkView.vue';
 import NatView from './components/NatView.vue';
 import P2pView from './components/P2pView.vue';
 import PeerSidebar from './components/PeerSidebar.vue';
@@ -45,6 +46,14 @@ onBeforeUnmount(() => {
             @click="appStore.activeTab = 'p2p'"
           >
             P2P 打洞
+          </button>
+          <button
+            type="button"
+            class="tab-btn"
+            :class="{ active: appStore.activeTab === 'link' }"
+            @click="appStore.activeTab = 'link'"
+          >
+            链路探测
           </button>
           <button
             type="button"
@@ -130,6 +139,7 @@ onBeforeUnmount(() => {
 
       <NatView v-if="appStore.activeTab === 'nat'" />
       <P2pView v-else-if="appStore.activeTab === 'p2p'" />
+      <LinkView v-else-if="appStore.activeTab === 'link'" />
       <HistoryView v-else />
 
       <AdvancedSettingsPanel
@@ -154,6 +164,14 @@ onBeforeUnmount(() => {
         @click="appStore.activeTab = 'p2p'"
       >
         P2P
+      </button>
+      <button
+        type="button"
+        class="bnav-btn"
+        :class="{ active: appStore.activeTab === 'link' }"
+        @click="appStore.activeTab = 'link'"
+      >
+        链路
       </button>
       <button
         type="button"
@@ -299,7 +317,7 @@ onBeforeUnmount(() => {
 .bottom-nav {
   flex-shrink: 0;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   background: var(--bg-surface);
   border-top: 1px solid var(--border);
   padding-bottom: env(safe-area-inset-bottom, 0px);

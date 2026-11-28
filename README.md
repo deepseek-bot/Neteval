@@ -16,6 +16,8 @@ NetEval 是一个轻量级的跨平台 NAT 画像与 P2P 联机可行性诊断�
 - **双端真实 P2P 打洞与延迟曲线**：
   - 两端通过轻量级 WebSocket 信令房间配对交换候选地址，使用独立隔离的 IPv4 / IPv6 UDP Socket 进行同步打洞（IPv6 优先，回退 IPv4，等待配对期间每 15 秒发送 UDP 保活防止 NAT 映射老化）。
   - 打洞成功后在固定采样窗口内互发小包，实时绘制 RTT、P95、抖动与丢包曲线，并给出联机结论（`excellent` / `good` / `unstable` / `failed`）。
+- **公网/自有节点直连链路探测**：
+  - 针对指定 IPv4/IPv6 地址执行无状态 TCP 与 TLS+SNI 直连探测，绕过系统 DNS 污染且无需 ICMP/管理员权限，输出各节点可达性、丢包率及 min/avg/max 握手延迟。
 - **无状态极简服务端**：单文件二进制运行，零数据库、零磁盘落盘、仅内存维护临时配对房间，适配 1C1G 低配 Linux VPS；客户端支持在本地保存历史检测报告与节点预设。
 - **多端覆盖**：提供 Windows 桌面 GUI、Android APK 以及 Windows / Linux 命令行客户端。
 
@@ -31,7 +33,7 @@ NetEval 是一个轻量级的跨平台 NAT 画像与 P2P 联机可行性诊断�
 
 | 文件名 | 平台 | 说明 |
 | --- | --- | --- |
-| `neteval-gui-windows-x86_64.exe` | Windows x86_64 | 桌面端图形界面（需系统已安装 WebView2 Runtime） |
+| `neteval-gui-windows-x86_64-setup.exe` | Windows x86_64 | 桌面端 NSIS 安装包（需系统已安装 WebView2 Runtime） |
 | `neteval-gui-android-arm64.apk` | Android arm64 | 移动端图形界面 APK |
 | `neteval-cli-windows-x86_64.exe` | Windows x86_64 | 命令行客户端 |
 | `neteval-cli-linux-x86_64` | Linux x86_64 (musl) | 静态链接命令行客户端 |
@@ -44,6 +46,7 @@ NetEval 是一个轻量级的跨平台 NAT 画像与 P2P 联机可行性诊断�
 
 - **NAT 体检**：切换至 **NAT 体检** 页签，选择“公共 STUN 初步判定”或填写自建服务器域名/IP 后使用“自建服务器精细判定”，点击 **开始体检**。
 - **P2P 打洞**：切换至 **P2P 打洞** 页签，选择协议并填写自建服务器域名/IP 与端口（默认 `ws://` 与 `34780`，也支持直接粘贴完整 `ws://host:port`）及相同的 **房间码**（4–16 位字母数字），点击 **开始测试** 即可查看实时打洞阶段与延迟折线图，结束后自动弹出报告详情。
+- **链路探测**：切换至 **链路探测** 页签，配置一个或多个公网/自有 IP 目标（支持 `TCP` 与 `TLS+SNI` 协议、自定义尝试次数/超时/并发），点击 **开始探测** 即可绕过系统 DNS 直连测出各目标的可达性、丢包率与握手 RTT。
 - **节点预设与策略**：可在 **高级设置** 中保存/套用节点预设、自定义探测端口（默认 `34778`/`34779`）以及切换打洞策略（`IPv6 优先` / `仅 IPv4` / `仅 IPv6`）；所有本地历史记录可在 **历史记录** 页签查看或删除。
 
 #### 2. 自建服务端部署（Linux VPS）
@@ -100,6 +103,15 @@ neteval-cli p2p \
   --echo-v6 <VPS_HOST>:34778
 ```
 
+**直连链路探测**（必须传入 IPv4 或 `[IPv6]` 字面量，绕过系统 DNS）：
+
+```bash
+neteval-cli link \
+  --target "CF-1.1.1.1=1.1.1.1:443@cloudflare.com" \
+  --target "VPS-WS=198.51.100.10:34780" \
+  --attempts 5 --timeout-ms 3000 --concurrency 3
+```
+
 **历史记录与 JSON 输出**：
 
 ```bash
@@ -146,6 +158,8 @@ NetEval is a lightweight, cross-platform diagnostic tool for NAT profiling and p
 - **Dual-Peer P2P Hole Punching & Latency Curves**:
   - Pairs two peers over a stateless WebSocket signaling room, exchanges local/reflexive/global-IPv6 candidates, and runs simultaneous hole punching on isolated IPv4 and IPv6 sockets (IPv6-first with IPv4 fallback and 15s keepalives while waiting).
   - Streams small fixed-window probes after punch success to calculate RTT, P95, jitter, packet loss, live chart series, and an overall verdict (`excellent` / `good` / `unstable` / `failed`).
+- **Direct Link Prober**:
+  - Probes explicit IPv4/IPv6 targets over stateless TCP or TLS+SNI without system DNS resolution or ICMP/admin privileges, reporting reachability, loss ratio, and min/avg/max handshake RTT.
 - **Stateless Minimal Server**: Single static binary with no database and no disk persistence; fits easily on a 1C1G Linux VPS. Clients persist assessment history locally as JSON.
 - **Cross-Platform Clients**: Available as a Windows Desktop GUI, Android arm64 APK, and Windows / Linux CLI.
 
@@ -161,7 +175,7 @@ Prebuilt binaries are available on [GitHub Releases](https://github.com/deepseek
 
 | Artifact | Platform | Description |
 | --- | --- | --- |
-| `neteval-gui-windows-x86_64.exe` | Windows x86_64 | Desktop GUI (requires WebView2 Runtime) |
+| `neteval-gui-windows-x86_64-setup.exe` | Windows x86_64 | Desktop NSIS installer (requires WebView2 Runtime) |
 | `neteval-gui-android-arm64.apk` | Android arm64 | Mobile GUI APK |
 | `neteval-cli-windows-x86_64.exe` | Windows x86_64 | Command-line client |
 | `neteval-cli-linux-x86_64` | Linux x86_64 (musl) | Statically linked CLI client |
@@ -174,6 +188,7 @@ Prebuilt binaries are available on [GitHub Releases](https://github.com/deepseek
 
 - **NAT Check**: Open the **NAT 体检** tab, choose either public STUN initial check or self-hosted server detailed check (by entering a single server host/domain), and start the check.
 - **P2P Test**: Open the **P2P 打洞** tab on both devices, pick the signaling protocol (`ws://`), enter your server host/port (defaults to `34780`, or paste a full `ws://host:port` URL directly) and the same **room code** (4–16 alphanumeric characters), then start the test to monitor live hole-punching stages and the RTT/loss chart.
+- **Link Probe**: Open the **链路探测** tab, configure explicit IP targets (`TCP` or `TLS+SNI`), attempts, timeout, and concurrency, and start probing without relying on system DNS.
 - **Presets, Strategy & History**: Save reusable server presets, customize probe ports (`34778`/`34779`), and choose the hole-punching strategy (`IPv6-first` / `IPv4-only` / `IPv6-only`) in **Advanced Settings**, and inspect or remove saved reports in the **History** tab.
 
 #### 2. Self-Hosted Server (Linux VPS)
@@ -228,6 +243,15 @@ neteval-cli p2p \
   --token your-secret-token \
   --echo-v4 <VPS_HOST>:34778 \
   --echo-v6 <VPS_HOST>:34778
+```
+
+**Direct Link Probe** (requires explicit IPv4 or `[IPv6]` literals; bypasses system DNS):
+
+```bash
+neteval-cli link \
+  --target "CF-1.1.1.1=1.1.1.1:443@cloudflare.com" \
+  --target "VPS-WS=198.51.100.10:34780" \
+  --attempts 5 --timeout-ms 3000 --concurrency 3
 ```
 
 **History & JSON Output**:

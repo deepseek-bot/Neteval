@@ -2,6 +2,8 @@
 import { computed, onBeforeUnmount, onMounted } from 'vue';
 import type { AssessmentReport } from '../types/protocol';
 import {
+  formatHostPort,
+  formatLinkProtocol,
   formatLossPct,
   formatMs,
   formatNatFiltering,
@@ -190,6 +192,49 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown));
             <span v-else class="note-text">{{ item.text }}</span>
           </li>
         </ul>
+      </template>
+
+      <template v-if="report.link_reports && report.link_reports.length > 0">
+        <div class="link-list">
+          <div
+            v-for="(item, idx) in report.link_reports"
+            :key="idx"
+            class="link-card"
+          >
+            <div class="link-card-head">
+              <div class="link-card-title">
+                <strong>{{ item.label }}</strong>
+                <span class="mono link-ep">{{ formatHostPort(item.host_ip, item.port) }}</span>
+                <span class="link-tag mono">{{ formatLinkProtocol(item.protocol) }}</span>
+              </div>
+              <span
+                class="link-status"
+                :class="item.reachable ? 'tone-excellent' : 'tone-failed'"
+              >
+                {{ item.reachable ? '可达' : '不可达' }}
+              </span>
+            </div>
+
+            <div class="metric-grid">
+              <div class="metric-item">
+                <span class="metric-label">丢包 / 成功</span>
+                <span class="metric-value mono">
+                  {{ formatLossPct(item.loss_ratio) }} ({{ item.received }}/{{ item.sent }})
+                </span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">平均 RTT</span>
+                <span class="metric-value mono">{{ formatMs(item.avg_rtt_ms) }}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">最小 / 最大 RTT</span>
+                <span class="metric-value mono">
+                  {{ formatMs(item.min_rtt_ms) }} / {{ formatMs(item.max_rtt_ms) }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
       </template>
     </div>
   </div>
@@ -387,5 +432,55 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeyDown));
 .modal-panel.mobile .nat-notes,
 .modal-panel.mobile .mapping-row {
   font-size: 13px;
+}
+
+.link-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.link-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.link-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.link-card-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.link-ep {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.link-tag {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+}
+
+.link-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
 }
 </style>

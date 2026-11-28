@@ -23,6 +23,17 @@ pub const DEFAULT_PROBE_PORT_P1: u16 = 34778;
 pub const DEFAULT_PROBE_PORT_P2: u16 = 34779;
 pub const DEFAULT_SIGNALING_WS_PORT: u16 = 34780;
 
+pub const DEFAULT_LINK_ATTEMPTS: u32 = 5;
+pub const MIN_LINK_ATTEMPTS: u32 = 1;
+pub const MAX_LINK_ATTEMPTS: u32 = 20;
+pub const DEFAULT_LINK_TIMEOUT_MS: u64 = 3000;
+pub const MIN_LINK_TIMEOUT_MS: u64 = 500;
+pub const MAX_LINK_TIMEOUT_MS: u64 = 15000;
+pub const DEFAULT_LINK_CONCURRENCY: u32 = 3;
+pub const MIN_LINK_CONCURRENCY: u32 = 1;
+pub const MAX_LINK_CONCURRENCY: u32 = 5;
+pub const MAX_LINK_TARGETS: usize = 64;
+
 pub const DEFAULT_PUBLIC_STUN_SERVERS: &[&str] = &[
     "stun.qq.com:3478",
     "stun.miwifi.com:3478",
@@ -51,6 +62,18 @@ fn default_window_secs() -> u32 {
 
 fn default_packet_rate_hz() -> u32 {
     DEFAULT_PACKET_RATE_HZ
+}
+
+fn default_link_attempts() -> u32 {
+    DEFAULT_LINK_ATTEMPTS
+}
+
+fn default_link_timeout_ms() -> u64 {
+    DEFAULT_LINK_TIMEOUT_MS
+}
+
+fn default_link_concurrency() -> u32 {
+    DEFAULT_LINK_CONCURRENCY
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -419,6 +442,63 @@ pub struct P2pReport {
     pub interrupted_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkProtocol {
+    Tcp,
+    TlsSni { sni: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkTarget {
+    pub label: String,
+    pub host_ip: String,
+    pub port: u16,
+    pub protocol: LinkProtocol,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkTaskInput {
+    pub targets: Vec<LinkTarget>,
+    #[serde(default = "default_link_attempts")]
+    pub attempts_per_target: u32,
+    #[serde(default = "default_link_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_link_concurrency")]
+    pub max_concurrency: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkSample {
+    pub seq: u32,
+    #[serde(default)]
+    pub rtt_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tcp_rtt_ms: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkTargetReport {
+    pub label: String,
+    pub host_ip: String,
+    pub port: u16,
+    pub protocol: LinkProtocol,
+    pub reachable: bool,
+    pub sent: u32,
+    pub received: u32,
+    pub loss_ratio: f32,
+    #[serde(default)]
+    pub avg_rtt_ms: Option<f32>,
+    #[serde(default)]
+    pub min_rtt_ms: Option<f32>,
+    #[serde(default)]
+    pub max_rtt_ms: Option<f32>,
+    #[serde(default)]
+    pub samples: Vec<LinkSample>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssessmentReport {
     pub report_id: String,
@@ -427,6 +507,8 @@ pub struct AssessmentReport {
     pub nat_report: Option<NatReport>,
     #[serde(default)]
     pub p2p_report: Option<P2pReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link_reports: Option<Vec<LinkTargetReport>>,
     #[serde(default)]
     pub storage_warning: Option<String>,
 }
@@ -442,6 +524,12 @@ pub struct ReportSummary {
     pub has_p2p: bool,
     #[serde(default)]
     pub p2p_verdict: Option<P2pVerdict>,
+    #[serde(default)]
+    pub has_link: bool,
+    #[serde(default)]
+    pub link_target_count: Option<u32>,
+    #[serde(default)]
+    pub link_reachable_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -533,6 +621,7 @@ mod tests {
         let parsed: AssessmentReport = serde_json::from_str(raw_v1_0).unwrap();
         assert_eq!(parsed.report_id, "nat_1");
         assert!(parsed.p2p_report.is_none());
+        assert_eq!(parsed.link_reports, Some(vec![]));
         assert_eq!(
             parsed.nat_report.unwrap().status,
             NatStatus::CompleteSingleVps
@@ -547,6 +636,63 @@ mod tests {
         let parsed_summary: ReportSummary = serde_json::from_str(raw_summary).unwrap();
         assert!(!parsed_summary.has_p2p);
         assert_eq!(parsed_summary.p2p_verdict, None);
+        assert!(!parsed_summary.has_link);
+        assert_eq!(parsed_summary.link_target_count, None);
+        assert_eq!(parsed_summary.link_reachable_count, None);
+    }
+
+    #[test]
+    fn link_probe_types_roundtrip_and_defaults() {
+        let raw_input = r#"{
+            "targets": [
+                {"label": "cf", "host_ip": "1.1.1.1", "port": 443, "protocol": {"tls_sni": {"sni": "cloudflare.com"}}},
+                {"label": "vps", "host_ip": "198.51.100.1", "port": 34780, "protocol": "tcp"}
+            ]
+        }"#;
+        let input: LinkTaskInput = serde_json::from_str(raw_input).unwrap();
+        assert_eq!(input.attempts_per_target, DEFAULT_LINK_ATTEMPTS);
+        assert_eq!(input.timeout_ms, DEFAULT_LINK_TIMEOUT_MS);
+        assert_eq!(input.max_concurrency, DEFAULT_LINK_CONCURRENCY);
+        assert_eq!(input.targets.len(), 2);
+
+        let report = AssessmentReport {
+            report_id: "link_1".into(),
+            created_unix_ms: 999,
+            nat_report: None,
+            p2p_report: None,
+            link_reports: Some(vec![LinkTargetReport {
+                label: "cf".into(),
+                host_ip: "1.1.1.1".into(),
+                port: 443,
+                protocol: LinkProtocol::TlsSni {
+                    sni: "cloudflare.com".into(),
+                },
+                reachable: true,
+                sent: 2,
+                received: 2,
+                loss_ratio: 0.0,
+                avg_rtt_ms: Some(12.5),
+                min_rtt_ms: Some(10.0),
+                max_rtt_ms: Some(15.0),
+                samples: vec![
+                    LinkSample {
+                        seq: 1,
+                        rtt_ms: Some(10.0),
+                        tcp_rtt_ms: Some(4.0),
+                        error: None,
+                    },
+                    LinkSample {
+                        seq: 2,
+                        rtt_ms: Some(15.0),
+                        tcp_rtt_ms: Some(5.0),
+                        error: None,
+                    },
+                ],
+            }]),
+            storage_warning: None,
+        };
+        let ser = serde_json::to_string(&report).unwrap();
+        assert_eq!(serde_json::from_str::<AssessmentReport>(&ser).unwrap(), report);
     }
 
     #[test]

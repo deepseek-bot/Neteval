@@ -9,6 +9,7 @@ import {
   listHistory,
   openExternalUrl,
   parseInvokeError,
+  startLinkAssessment,
   startNatAssessment,
   startP2pAssessment,
   subscribeAssessmentState,
@@ -28,6 +29,8 @@ import {
   type AssessmentReport,
   type AssessmentState,
   type LatencyPoint,
+  type LinkTarget,
+  type LinkTargetReport,
   type LivePeerInfo,
   type NatReport,
   type NodePreset,
@@ -52,6 +55,14 @@ import {
 
 const PREFS_KEY = 'neteval_gui_prefs_v1';
 
+export interface LinkFormTarget {
+  label: string;
+  host_ip: string;
+  port: number;
+  mode: 'tcp' | 'tls_sni';
+  sni: string;
+}
+
 interface StoredPrefs {
   presets: NodePreset[];
   selectedPresetId: string;
@@ -72,11 +83,36 @@ interface StoredPrefs {
     stun_text: string;
     timeout_ms: number;
   };
+  link?: {
+    targets: LinkFormTarget[];
+    attempts_per_target: number;
+    timeout_ms: number;
+    max_concurrency: number;
+  };
   update?: {
     autoCheckUpdates: boolean;
     lastUpdateCheckAt: number;
     dismissedVersion: string;
   };
+}
+
+function defaultLinkTargets(): LinkFormTarget[] {
+  return [
+    {
+      label: 'Cloudflare 1.1.1.1',
+      host_ip: '1.1.1.1',
+      port: 443,
+      mode: 'tls_sni',
+      sni: 'cloudflare.com',
+    },
+    {
+      label: 'Cloudflare 1.0.0.1',
+      host_ip: '1.0.0.1',
+      port: 443,
+      mode: 'tls_sni',
+      sni: 'cloudflare.com',
+    },
+  ];
 }
 
 function defaultPrefs(): StoredPrefs {
@@ -107,6 +143,12 @@ function defaultPrefs(): StoredPrefs {
       useSelfHostedVps: false,
       stun_text: DEFAULT_STUN_SERVERS.join(', '),
       timeout_ms: 2500,
+    },
+    link: {
+      targets: defaultLinkTargets(),
+      attempts_per_target: 5,
+      timeout_ms: 3000,
+      max_concurrency: 3,
     },
     update: {
       autoCheckUpdates: true,
@@ -220,6 +262,10 @@ function loadPrefs(): StoredPrefs {
       parsed.nat && typeof parsed.nat === 'object'
         ? (parsed.nat as Record<string, unknown>)
         : {};
+    const rawLink =
+      parsed.link && typeof parsed.link === 'object'
+        ? (parsed.link as Record<string, unknown>)
+        : {};
     const rawUpdate =
       parsed.update && typeof parsed.update === 'object'
         ? (parsed.update as Record<string, unknown>)
@@ -287,6 +333,29 @@ function loadPrefs(): StoredPrefs {
           typeof rawNat.stun_text === 'string' ? rawNat.stun_text : base.nat.stun_text,
         timeout_ms: Number(rawNat.timeout_ms) || base.nat.timeout_ms,
       },
+      link: {
+        targets: Array.isArray(rawLink.targets)
+          ? rawLink.targets
+              .map((item): LinkFormTarget | null => {
+                if (!item || typeof item !== 'object') return null;
+                const obj = item as Record<string, unknown>;
+                return {
+                  label: typeof obj.label === 'string' ? obj.label : '',
+                  host_ip: typeof obj.host_ip === 'string' ? obj.host_ip : '',
+                  port: validPortOr(obj.port, 443),
+                  mode: obj.mode === 'tcp' ? 'tcp' : 'tls_sni',
+                  sni: typeof obj.sni === 'string' ? obj.sni : '',
+                };
+              })
+              .filter((item): item is LinkFormTarget => item !== null)
+          : (base.link?.targets ?? defaultLinkTargets()),
+        attempts_per_target: Math.min(
+          20,
+          Math.max(1, Number(rawLink.attempts_per_target) || 5),
+        ),
+        timeout_ms: Math.min(15000, Math.max(500, Number(rawLink.timeout_ms) || 3000)),
+        max_concurrency: Math.min(5, Math.max(1, Number(rawLink.max_concurrency) || 3)),
+      },
       update: {
         autoCheckUpdates:
           typeof rawUpdate.autoCheckUpdates === 'boolean'
@@ -322,13 +391,13 @@ function syncMobileRootClass(mobile: boolean): void {
 }
 
 export const appStore = reactive({
-  activeTab: 'p2p' as 'nat' | 'p2p' | 'history',
+  activeTab: 'p2p' as 'nat' | 'p2p' | 'link' | 'history',
   leftSidebarOpen: false,
   rightSidebarOpen: false,
   isMobile: detectIsMobile(),
 
   assessmentState: 'idle' as AssessmentState,
-  activeKind: null as 'nat' | 'p2p' | null,
+  activeKind: null as 'nat' | 'p2p' | 'link' | null,
   liveSeries: [] as LatencyPoint[],
   livePeer: null as LivePeerInfo | null,
   waitingDeadlineMs: null as number | null,
@@ -336,6 +405,7 @@ export const appStore = reactive({
 
   latestNatReport: null as NatReport | null,
   latestP2pReport: null as AssessmentReport | null,
+  latestLinkReports: null as LinkTargetReport[] | null,
   modalReport: null as AssessmentReport | null,
   history: [] as ReportSummary[],
   statusNotice: '' as string,
@@ -347,6 +417,12 @@ export const appStore = reactive({
   serverForm: initialPrefs.server,
   p2pForm: initialPrefs.p2p,
   natForm: initialPrefs.nat,
+  linkForm: initialPrefs.link ?? {
+    targets: defaultLinkTargets(),
+    attempts_per_target: 5,
+    timeout_ms: 3000,
+    max_concurrency: 3,
+  },
 
   appVersion: normalizeVersion(pkg.version),
   autoCheckUpdates: initialPrefs.update?.autoCheckUpdates ?? true,
@@ -375,6 +451,8 @@ function resetForNewTask(taskId: string): void {
     appStore.liveSeries = [];
     appStore.livePeer = null;
     appStore.latestP2pReport = null;
+  } else if (taskId.startsWith('link_')) {
+    appStore.latestLinkReports = null;
   }
 }
 
@@ -386,6 +464,7 @@ export function savePrefs(): void {
       server: appStore.serverForm,
       p2p: appStore.p2pForm,
       nat: appStore.natForm,
+      link: appStore.linkForm,
       update: {
         autoCheckUpdates: appStore.autoCheckUpdates,
         lastUpdateCheckAt: appStore.lastUpdateCheckAt,
@@ -442,7 +521,11 @@ function handleStateUpdate(state: AssessmentState): void {
   if ('running' in state) {
     const r = state.running;
     resetForNewTask(r.task_id);
-    appStore.activeKind = r.task_id.startsWith('nat_') ? 'nat' : 'p2p';
+    appStore.activeKind = r.task_id.startsWith('nat_')
+      ? 'nat'
+      : r.task_id.startsWith('link_')
+        ? 'link'
+        : 'p2p';
 
     if (r.stage === 'reconnecting_signaling') {
       appStore.errorNotice = r.status_message || '自建信令服务器不可达，正在自动重试...';
@@ -451,7 +534,7 @@ function handleStateUpdate(state: AssessmentState): void {
       appStore.errorNotice = '';
       appStore.statusNotice =
         r.status_message || '已成功连接信令节点并进入房间，等待对端加入';
-    } else if (r.stage === 'punching' && r.status_message) {
+    } else if ((r.stage === 'punching' || r.stage === 'probing_links') && r.status_message) {
       appStore.errorNotice = '';
       appStore.statusNotice = r.status_message;
     } else {
@@ -499,6 +582,9 @@ function handleStateUpdate(state: AssessmentState): void {
       if (report.p2p_report.series.length > 0) {
         appStore.liveSeries = report.p2p_report.series;
       }
+    }
+    if (report.link_reports) {
+      appStore.latestLinkReports = report.link_reports;
     }
     appStore.modalReport = report;
     void refreshHistory();
@@ -897,6 +983,102 @@ export async function runNatTest(options?: { skipVps?: boolean }): Promise<void>
       token,
       timeout_ms: Math.max(300, Number(appStore.natForm.timeout_ms) || 2500),
       require_vps: useVps,
+    });
+    resetForNewTask(taskId);
+  } catch (err) {
+    appStore.errorNotice = formatProbeError(parseInvokeError(err));
+  }
+}
+
+export function addLinkTarget(): void {
+  if (appStore.linkForm.targets.length >= 64) {
+    appStore.errorNotice = '最多支持 64 个探测目标';
+    return;
+  }
+  appStore.linkForm.targets.push({
+    label: '',
+    host_ip: '',
+    port: 443,
+    mode: 'tls_sni',
+    sni: '',
+  });
+  savePrefs();
+}
+
+export function removeLinkTarget(idx: number): void {
+  if (appStore.linkForm.targets.length <= 1) return;
+  appStore.linkForm.targets.splice(idx, 1);
+  savePrefs();
+}
+
+export async function runLinkTest(): Promise<void> {
+  appStore.errorNotice = '';
+  appStore.statusNotice = '';
+
+  const rows = appStore.linkForm.targets;
+  if (rows.length === 0) {
+    appStore.errorNotice = '请至少添加一个探测目标';
+    return;
+  }
+  if (rows.length > 64) {
+    appStore.errorNotice = '探测目标数量不能超过 64 个';
+    return;
+  }
+
+  const targets: LinkTarget[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const label = row.label.trim();
+    const ip = normalizeHost(row.host_ip);
+    const port = Number(row.port);
+    if (!label) {
+      appStore.errorNotice = `第 ${i + 1} 个目标缺少名称`;
+      return;
+    }
+    if (!isIpv4Literal(ip) && !isIpv6Literal(ip)) {
+      appStore.errorNotice = `第 ${i + 1} 个目标（${label}）必须填写 IPv4 或 IPv6 地址（直连探测不走系统 DNS）`;
+      return;
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      appStore.errorNotice = `第 ${i + 1} 个目标（${label}）端口需为 1~65535 的整数`;
+      return;
+    }
+    if (row.mode === 'tls_sni') {
+      const sni = row.sni.trim();
+      if (!sni || /\s/.test(sni)) {
+        appStore.errorNotice = `第 ${i + 1} 个目标（${label}）使用 TLS+SNI 时必须填写有效 SNI 域名`;
+        return;
+      }
+      targets.push({
+        label,
+        host_ip: ip,
+        port,
+        protocol: { tls_sni: { sni } },
+      });
+    } else {
+      targets.push({
+        label,
+        host_ip: ip,
+        port,
+        protocol: 'tcp',
+      });
+    }
+  }
+
+  const attempts = Math.min(20, Math.max(1, Number(appStore.linkForm.attempts_per_target) || 5));
+  const timeoutMs = Math.min(15000, Math.max(500, Number(appStore.linkForm.timeout_ms) || 3000));
+  const concurrency = Math.min(5, Math.max(1, Number(appStore.linkForm.max_concurrency) || 3));
+  appStore.linkForm.attempts_per_target = attempts;
+  appStore.linkForm.timeout_ms = timeoutMs;
+  appStore.linkForm.max_concurrency = concurrency;
+  savePrefs();
+
+  try {
+    const taskId = await startLinkAssessment({
+      targets,
+      attempts_per_target: attempts,
+      timeout_ms: timeoutMs,
+      max_concurrency: concurrency,
     });
     resetForNewTask(taskId);
   } catch (err) {

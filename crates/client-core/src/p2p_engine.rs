@@ -2121,7 +2121,12 @@ where
                                                 rtt_ms: Some(rtt_ms),
                                             }));
                                             if next_send_at.is_none() && received_count >= total_packets {
-                                                break;
+                                                let linger_until = Instant::now()
+                                                    + compute_peer_linger(max_observed_rtt_ms);
+                                                grace_deadline = Some(match grace_deadline {
+                                                    Some(existing) => existing.min(linger_until),
+                                                    None => linger_until,
+                                                });
                                             }
                                         }
                                     } else {
@@ -2167,14 +2172,16 @@ where
                 } else {
                     next_send_at = None;
                     if received_count >= total_packets {
-                        break;
+                        grace_deadline =
+                            Some(Instant::now() + compute_peer_linger(max_observed_rtt_ms));
+                    } else {
+                        let min_grace = (interval * 2).max(Duration::from_millis(400));
+                        let dynamic_grace = Duration::from_secs_f64(
+                            (f64::from(max_observed_rtt_ms) * 2.0 / 1000.0).clamp(0.4, 1.5),
+                        );
+                        let grace = min_grace.max(dynamic_grace).min(Duration::from_millis(1500));
+                        grace_deadline = Some(Instant::now() + grace);
                     }
-                    let min_grace = (interval * 2).max(Duration::from_millis(400));
-                    let dynamic_grace = Duration::from_secs_f64(
-                        (f64::from(max_observed_rtt_ms) * 2.0 / 1000.0).clamp(0.4, 1.5),
-                    );
-                    let grace = min_grace.max(dynamic_grace).min(Duration::from_millis(1500));
-                    grace_deadline = Some(Instant::now() + grace);
                 }
             }
             _ = sleep_until_opt(grace_deadline) => {
@@ -2214,6 +2221,10 @@ where
         ),
     );
     Ok(report)
+}
+
+fn compute_peer_linger(max_observed_rtt_ms: f32) -> Duration {
+    Duration::from_secs_f64((f64::from(max_observed_rtt_ms) * 1.5 / 1000.0).clamp(0.25, 0.5))
 }
 
 #[cfg(test)]

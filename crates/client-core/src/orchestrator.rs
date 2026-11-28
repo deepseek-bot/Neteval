@@ -5,15 +5,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use protocol::{
     validate_room_code, AssessmentReport, AssessmentState, DEFAULT_PUBLIC_STUN_SERVERS,
-    KEEPALIVE_INTERVAL_SECS, LivePeerInfo, MAX_PACKET_RATE_HZ, MAX_PUNCH_TIMEOUT_MS,
-    MAX_WINDOW_SECS, MIN_PACKET_RATE_HZ, MIN_PUNCH_TIMEOUT_MS, MIN_WINDOW_SECS, NatStatus,
-    NatTaskInput, P2pTaskInput, ProbeError, ReportSummary, TASK_ALREADY_RUNNING_MSG,
+    KEEPALIVE_INTERVAL_SECS, LinkTaskInput, LivePeerInfo, MAX_PACKET_RATE_HZ,
+    MAX_PUNCH_TIMEOUT_MS, MAX_WINDOW_SECS, MIN_PACKET_RATE_HZ, MIN_PUNCH_TIMEOUT_MS,
+    MIN_WINDOW_SECS, NatStatus, NatTaskInput, P2pTaskInput, ProbeError, ReportSummary,
+    TASK_ALREADY_RUNNING_MSG,
 };
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::link_prober;
 use crate::local_store::LocalStore;
 use crate::logger::{error, info, warn};
 use crate::nat_prober;
@@ -203,6 +205,72 @@ impl Orchestrator {
         Ok(task_id)
     }
 
+    pub async fn start_link_assessment(&self, input: LinkTaskInput) -> Result<String, ProbeError> {
+        let mut active_guard = self.inner.active.lock().map_err(|_| {
+            error(LOG_MOD, "orchestrator active mutex poisoned");
+            ProbeError::Internal("orchestrator lock poisoned".into())
+        })?;
+
+        if active_guard.is_some() {
+            warn(
+                LOG_MOD,
+                "rejected start_link_assessment: task_already_running",
+            );
+            return Err(ProbeError::InvalidInput(TASK_ALREADY_RUNNING_MSG.into()));
+        }
+
+        link_prober::validate_link_input(&input)?;
+
+        let created_unix_ms = now_unix_ms();
+        let seq = TASK_SEQ.fetch_add(1, Ordering::Relaxed);
+        let task_id = format!("link_{created_unix_ms}_{seq}");
+        let cancel = CancellationToken::new();
+        let cancel_reason = Arc::new(Mutex::new(None));
+
+        let initial_state = AssessmentState::Running {
+            task_id: task_id.clone(),
+            stage: "probing_links".into(),
+            progress_pct: 5,
+            live_point: None,
+            live_peer: None,
+            status_message: Some(format!("正在探测 {} 个目标节点", input.targets.len())),
+        };
+        let _ = self.inner.state_tx.send(initial_state);
+        info(
+            LOG_MOD,
+            format!(
+                "started link assessment task_id={task_id} targets={}",
+                input.targets.len()
+            ),
+        );
+
+        let inner = Arc::clone(&self.inner);
+        let task_id_clone = task_id.clone();
+        let cancel_clone = cancel.clone();
+        let reason_clone = Arc::clone(&cancel_reason);
+
+        let handle = tokio::spawn(async move {
+            run_link_task(
+                inner,
+                task_id_clone,
+                created_unix_ms,
+                input,
+                cancel_clone,
+                reason_clone,
+            )
+            .await;
+        });
+
+        *active_guard = Some(ActiveTask {
+            task_id: task_id.clone(),
+            cancel,
+            cancel_reason,
+            handle,
+        });
+
+        Ok(task_id)
+    }
+
     pub async fn cancel_current(&self, reason: Option<String>) -> Result<(), ProbeError> {
         let active = {
             let mut guard = self.inner.active.lock().map_err(|_| {
@@ -344,6 +412,7 @@ async fn run_nat_task(
                     created_unix_ms,
                     nat_report: Some(nat_report),
                     p2p_report: None,
+                    link_reports: None,
                     storage_warning: None,
                 };
 
@@ -819,6 +888,7 @@ async fn execute_p2p_lifecycle(
                 created_unix_ms,
                 nat_report: None,
                 p2p_report: Some(p2p_report),
+                link_reports: None,
                 storage_warning: None,
             };
 
@@ -884,6 +954,111 @@ async fn handle_p2p_event(
             });
         }
     }
+}
+
+async fn run_link_task(
+    inner: Arc<OrchestratorInner>,
+    task_id: String,
+    created_unix_ms: u64,
+    input: LinkTaskInput,
+    cancel: CancellationToken,
+    cancel_reason: Arc<Mutex<Option<String>>>,
+) {
+    let state_tx = inner.state_tx.clone();
+    let tid_for_progress = task_id.clone();
+
+    let probe_res = link_prober::run_link_probe(
+        &input.targets,
+        input.attempts_per_target,
+        input.timeout_ms,
+        input.max_concurrency,
+        cancel.clone(),
+        move |done, total, target_report| {
+            let pct = 10u8.saturating_add(((done * 80) / total.max(1)) as u8);
+            let _ = state_tx.send(AssessmentState::Running {
+                task_id: tid_for_progress.clone(),
+                stage: "probing_links".into(),
+                progress_pct: pct.min(90),
+                live_point: None,
+                live_peer: None,
+                status_message: Some(format!("已完成 {done}/{total}: {}", target_report.label)),
+            });
+        },
+    )
+    .await;
+
+    let final_state = match probe_res {
+        Err(ProbeError::Cancelled) => {
+            let reason = cancel_reason.lock().ok().and_then(|g| g.clone());
+            info(
+                LOG_MOD,
+                format!("task_id={task_id} cancelled during probing_links"),
+            );
+            AssessmentState::Cancelled { reason }
+        }
+        Err(err) => {
+            warn(
+                LOG_MOD,
+                format!("task_id={task_id} failed during probing_links: {err}"),
+            );
+            AssessmentState::Failed(err)
+        }
+        Ok(link_reports) => {
+            if cancel.is_cancelled() {
+                let reason = cancel_reason.lock().ok().and_then(|g| g.clone());
+                info(
+                    LOG_MOD,
+                    format!("task_id={task_id} cancelled before saving_report"),
+                );
+                AssessmentState::Cancelled { reason }
+            } else {
+                let _ = inner.state_tx.send(AssessmentState::Running {
+                    task_id: task_id.clone(),
+                    stage: "saving_report".into(),
+                    progress_pct: 95,
+                    live_point: None,
+                    live_peer: None,
+                    status_message: None,
+                });
+
+                let mut report = AssessmentReport {
+                    report_id: task_id.clone(),
+                    created_unix_ms,
+                    nat_report: None,
+                    p2p_report: None,
+                    link_reports: Some(link_reports),
+                    storage_warning: None,
+                };
+
+                if let Err(err) = inner.store.save_report(&report) {
+                    warn(
+                        LOG_MOD,
+                        format!(
+                            "task_id={task_id} saving_report failed; preserving report with storage_warning: {err}"
+                        ),
+                    );
+                    report.storage_warning = Some(err.to_string());
+                }
+
+                info(
+                    LOG_MOD,
+                    format!("task_id={task_id} link assessment completed"),
+                );
+                AssessmentState::Completed(report)
+            }
+        }
+    };
+
+    if let Ok(mut guard) = inner.active.lock() {
+        if guard
+            .as_ref()
+            .is_some_and(|active| active.task_id == task_id)
+        {
+            *guard = None;
+        }
+    }
+
+    let _ = inner.state_tx.send(final_state);
 }
 
 fn now_unix_ms() -> u64 {
